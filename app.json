@@ -19,9 +19,14 @@
         "UIBackgroundModes": [
           "location",
           "fetch",
+          "remote-notification",
+          "location",
+          "fetch",
           "remote-notification"
-        ]
-      }
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.hassankourani.remindmepro"
     },
     "android": {
       "adaptiveIcon": {

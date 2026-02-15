@@ -16,6 +16,7 @@ export interface PlaceDetails {
 export async function searchPlaces(
   query: string,
   location?: { lat: number; lng: number },
+  countryCode?: string | null,
 ): Promise<PlacePrediction[]> {
   if (!query.trim()) return [];
 
@@ -27,6 +28,10 @@ export async function searchPlaces(
   if (location) {
     params.set('location', `${location.lat},${location.lng}`);
     params.set('radius', '50000');
+  }
+
+  if (countryCode) {
+    params.set('components', `country:${countryCode}`);
   }
 
   const response = await fetch(
@@ -48,6 +53,65 @@ export async function searchPlaces(
     mainText: p.structured_formatting.main_text,
     secondaryText: p.structured_formatting.secondary_text,
   }));
+}
+
+export async function getNearbyPlaces(
+  location: { lat: number; lng: number },
+): Promise<PlacePrediction[]> {
+  const params = new URLSearchParams({
+    location: `${location.lat},${location.lng}`,
+    radius: '5000',
+    key: API_KEY,
+  });
+
+  const response = await fetch(
+    `https://maps.googleapis.com/maps/api/place/nearbysearch/json?${params}`,
+  );
+  const data = await response.json();
+
+  if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
+    return [];
+  }
+
+  return (data.results ?? []).slice(0, 5).map((p: {
+    place_id: string;
+    name: string;
+    vicinity: string;
+  }) => ({
+    placeId: p.place_id,
+    description: `${p.name}, ${p.vicinity}`,
+    mainText: p.name,
+    secondaryText: p.vicinity ?? '',
+  }));
+}
+
+export async function reverseGeocode(
+  lat: number,
+  lng: number,
+): Promise<{ address: string; countryCode: string | null }> {
+  const params = new URLSearchParams({
+    latlng: `${lat},${lng}`,
+    key: API_KEY,
+  });
+
+  const response = await fetch(
+    `https://maps.googleapis.com/maps/api/geocode/json?${params}`,
+  );
+  const data = await response.json();
+
+  if (data.status !== 'OK' || !data.results?.length) {
+    return { address: '', countryCode: null };
+  }
+
+  const result = data.results[0];
+  const countryComponent = result.address_components?.find(
+    (c: { types: string[] }) => c.types.includes('country'),
+  );
+
+  return {
+    address: result.formatted_address ?? '',
+    countryCode: countryComponent?.short_name?.toLowerCase() ?? null,
+  };
 }
 
 export async function getPlaceDetails(placeId: string): Promise<PlaceDetails | null> {

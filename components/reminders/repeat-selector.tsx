@@ -58,6 +58,12 @@ export function RepeatSelector({ value, onChange }: RepeatSelectorProps) {
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
+          backgroundColor: surface,
+          borderRadius: 12,
+          paddingVertical: 12,
+          paddingHorizontal: 16,
+          borderWidth: 1,
+          borderColor: border,
         }}
       >
         <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>

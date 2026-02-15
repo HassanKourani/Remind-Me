@@ -4,10 +4,12 @@ import Animated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { MaterialIcons } from '@expo/vector-icons';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PageHeader } from '@/components/ui/page-header';
+import { KeyboardDismissButton } from '@/components/ui/keyboard-dismiss-button';
 import { TypeSelector } from '@/components/reminders/type-selector';
 import { PrioritySelector } from '@/components/reminders/priority-selector';
 import { CategorySelector } from '@/components/reminders/category-selector';
@@ -34,7 +36,10 @@ export default function CreateReminderScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const backgroundColor = useThemeColor({}, 'background');
+  const surface = useThemeColor({}, 'surface');
+  const text = useThemeColor({}, 'text');
   const textSecondary = useThemeColor({}, 'textSecondary');
+  const border = useThemeColor({}, 'border');
 
   const isGuest = useAuthStore((s) => s.isGuest);
   const user = useAuthStore((s) => s.user);
@@ -72,6 +77,14 @@ export default function CreateReminderScreen() {
   const [locationNotify, setLocationNotify] = useState<LocationNotify>('every_time');
 
   const [isSaving, setIsSaving] = useState(false);
+
+  const sectionCard = {
+    backgroundColor: surface,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: border,
+  } as const;
 
   const handleSave = async () => {
     if (!title.trim()) {
@@ -146,61 +159,61 @@ export default function CreateReminderScreen() {
           paddingHorizontal: 24,
           paddingTop: 24,
           paddingBottom: insets.bottom + 40,
-          gap: 20,
+          gap: 24,
         }}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Type selector */}
-        <View style={{ gap: 6 }}>
-          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
-            Type
-          </Animated.Text>
-          <TypeSelector value={type} onChange={setType} />
+        {/* Section 1: Type */}
+        <View style={sectionCard}>
+          <View style={{ gap: 6 }}>
+            <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+              Type
+            </Animated.Text>
+            <TypeSelector value={type} onChange={setType} />
+          </View>
         </View>
 
-        {/* Title */}
-        <Input
-          label="Title"
-          placeholder="Enter reminder title"
-          value={title}
-          onChangeText={(t) => {
-            setTitle(t);
-            setTitleError(null);
-          }}
-          error={titleError}
-        />
-
-        {/* Notes */}
-        <Input
-          label="Notes (optional)"
-          placeholder="Add some details..."
-          value={notes}
-          onChangeText={setNotes}
-          multiline
-          numberOfLines={3}
-          style={{ height: 80, textAlignVertical: 'top', paddingTop: 12 }}
-        />
-
-        {/* Priority */}
-        <View style={{ gap: 6 }}>
-          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
-            Priority
-          </Animated.Text>
-          <PrioritySelector value={priority} onChange={setPriority} />
+        {/* Section 2: Title + Notes */}
+        <View style={[sectionCard, { gap: 16 }]}>
+          <Input
+            label="Title"
+            placeholder="Enter reminder title"
+            value={title}
+            onChangeText={(t) => {
+              setTitle(t);
+              setTitleError(null);
+            }}
+            error={titleError}
+          />
+          <Input
+            label="Notes (optional)"
+            placeholder="Add some details..."
+            value={notes}
+            onChangeText={setNotes}
+            multiline
+            numberOfLines={3}
+          />
         </View>
 
-        {/* Category */}
-        <View style={{ gap: 6 }}>
-          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
-            Category
-          </Animated.Text>
-          <CategorySelector value={category} onChange={setCategory} />
+        {/* Section 3: Priority + Category */}
+        <View style={[sectionCard, { gap: 16 }]}>
+          <View style={{ gap: 6 }}>
+            <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+              Priority
+            </Animated.Text>
+            <PrioritySelector value={priority} onChange={setPriority} />
+          </View>
+          <View style={{ gap: 6 }}>
+            <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+              Category
+            </Animated.Text>
+            <CategorySelector value={category} onChange={setCategory} />
+          </View>
         </View>
 
-        {/* Time-specific fields */}
+        {/* Section 4: Time-specific fields */}
         {type === 'time' && (
-          <View style={{ gap: 16 }}>
-            {/* Date picker */}
+          <View style={[sectionCard, { gap: 16 }]}>
             <View style={{ gap: 6 }}>
               <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
                 Date & Time
@@ -210,15 +223,19 @@ export default function CreateReminderScreen() {
                   onPress={() => setShowDatePicker(true)}
                   style={{
                     flex: 1,
-                    backgroundColor: useThemeColor({}, 'surface'),
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: backgroundColor,
                     borderRadius: 12,
                     paddingVertical: 12,
-                    paddingHorizontal: 16,
+                    paddingHorizontal: 14,
                     borderWidth: 1,
-                    borderColor: useThemeColor({}, 'border'),
+                    borderColor: border,
                   }}
                 >
-                  <Animated.Text style={{ color: useThemeColor({}, 'text'), fontSize: 15 }}>
+                  <MaterialIcons name="calendar-today" size={18} color={textSecondary} />
+                  <Animated.Text style={{ color: text, fontSize: 15 }}>
                     {dateTime.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                   </Animated.Text>
                 </Pressable>
@@ -226,15 +243,19 @@ export default function CreateReminderScreen() {
                   onPress={() => setShowTimePicker(true)}
                   style={{
                     flex: 1,
-                    backgroundColor: useThemeColor({}, 'surface'),
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: backgroundColor,
                     borderRadius: 12,
                     paddingVertical: 12,
-                    paddingHorizontal: 16,
+                    paddingHorizontal: 14,
                     borderWidth: 1,
-                    borderColor: useThemeColor({}, 'border'),
+                    borderColor: border,
                   }}
                 >
-                  <Animated.Text style={{ color: useThemeColor({}, 'text'), fontSize: 15 }}>
+                  <MaterialIcons name="access-time" size={18} color={textSecondary} />
+                  <Animated.Text style={{ color: text, fontSize: 15 }}>
                     {dateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </Animated.Text>
                 </Pressable>
@@ -275,24 +296,28 @@ export default function CreateReminderScreen() {
           </View>
         )}
 
-        {/* Location-specific fields */}
+        {/* Section 4: Location-specific fields */}
         {type === 'location' && (
-          <LocationPicker
-            lat={locationLat}
-            lng={locationLng}
-            address={locationAddress}
-            radius={locationRadius}
-            trigger={locationTrigger}
-            notify={locationNotify}
-            onLocationChange={(lat, lng, address) => {
-              setLocationLat(lat);
-              setLocationLng(lng);
-              setLocationAddress(address);
-            }}
-            onRadiusChange={setLocationRadius}
-            onTriggerChange={setLocationTrigger}
-            onNotifyChange={setLocationNotify}
-          />
+          <View style={[sectionCard, { padding: 0 }]}>
+            <View style={{ padding: 16 }}>
+              <LocationPicker
+                lat={locationLat}
+                lng={locationLng}
+                address={locationAddress}
+                radius={locationRadius}
+                trigger={locationTrigger}
+                notify={locationNotify}
+                onLocationChange={(lat, lng, address) => {
+                  setLocationLat(lat);
+                  setLocationLng(lng);
+                  setLocationAddress(address);
+                }}
+                onRadiusChange={setLocationRadius}
+                onTriggerChange={setLocationTrigger}
+                onNotifyChange={setLocationNotify}
+              />
+            </View>
+          </View>
         )}
 
         {/* Save button */}
@@ -302,6 +327,8 @@ export default function CreateReminderScreen() {
           </Button>
         </View>
       </ScrollView>
+
+      <KeyboardDismissButton />
     </KeyboardAvoidingView>
   );
 }

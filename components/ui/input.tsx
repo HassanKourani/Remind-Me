@@ -18,7 +18,7 @@ interface InputProps extends TextInputProps {
   rightIcon?: React.ReactNode;
 }
 
-export function Input({ label, error, rightIcon, secureTextEntry, style, ...props }: InputProps) {
+export function Input({ label, error, rightIcon, secureTextEntry, multiline, style, ...props }: InputProps) {
   const [isFocused, setIsFocused] = useState(false);
   const [isSecure, setIsSecure] = useState(secureTextEntry ?? false);
 
@@ -70,12 +70,14 @@ export function Input({ label, error, rightIcon, secureTextEntry, style, ...prop
         style={[
           {
             flexDirection: 'row',
-            alignItems: 'center',
+            ...(multiline ? {} : { alignItems: 'center' }),
             backgroundColor: surface,
             borderWidth: 1.5,
             borderRadius: 12,
             paddingHorizontal: 16,
-            height: 48,
+            ...(multiline
+              ? { minHeight: 100, paddingVertical: 12 }
+              : { height: 48 }),
           },
           containerStyle,
         ]}
@@ -83,6 +85,7 @@ export function Input({ label, error, rightIcon, secureTextEntry, style, ...prop
         <TextInput
           placeholderTextColor={textSecondary + '80'}
           secureTextEntry={isSecure}
+          multiline={multiline}
           onFocus={() => {
             setIsFocused(true);
             focusProgress.value = withTiming(1, { duration: 200 });
@@ -96,7 +99,9 @@ export function Input({ label, error, rightIcon, secureTextEntry, style, ...prop
               flex: 1,
               color: textColor,
               fontSize: 16,
-              height: '100%',
+              ...(multiline
+                ? { textAlignVertical: 'top' }
+                : { height: '100%' }),
             },
             style,
           ]}

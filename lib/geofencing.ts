@@ -8,37 +8,42 @@ import type { Reminder } from '@/types/reminder';
 const GEOFENCE_TASK = 'GEOFENCE_TASK';
 
 // Register background task for geofence events
-TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
-  if (error) return;
+// Must be called before any geofencing functions are used
+let taskDefined = false;
 
-  const { eventType, region } = data as {
-    eventType: Location.GeofencingEventType;
-    region: Location.LocationRegion;
-  };
+export function ensureGeofenceTaskDefined(): void {
+  if (taskDefined) return;
+  taskDefined = true;
 
-  const reminderId = region.identifier;
+  TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
+    if (error) return;
 
-  // Determine if we should notify based on trigger type
-  // The region identifier stores the reminder id
-  // We send a notification for enter/leave events
-  const isEnter = eventType === Location.GeofencingEventType.Enter;
-  const isExit = eventType === Location.GeofencingEventType.Exit;
+    const { eventType, region } = data as {
+      eventType: Location.GeofencingEventType;
+      region: Location.LocationRegion;
+    };
 
-  if (!isEnter && !isExit) return;
+    const reminderId = region.identifier;
 
-  const eventLabel = isEnter ? 'Arrived at' : 'Left';
+    const isEnter = eventType === Location.GeofencingEventType.Enter;
+    const isExit = eventType === Location.GeofencingEventType.Exit;
 
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title: 'Location Reminder',
-      body: `${eventLabel} your reminder location`,
-      data: { reminderId },
-      sound: true,
-      ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
-    },
-    trigger: null, // Immediate
+    if (!isEnter && !isExit) return;
+
+    const eventLabel = isEnter ? 'Arrived at' : 'Left';
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Location Reminder',
+        body: `${eventLabel} your reminder location`,
+        data: { reminderId },
+        sound: true,
+        ...(Platform.OS === 'android' ? { channelId: 'default' } : {}),
+      },
+      trigger: null,
+    });
   });
-});
+}
 
 export async function requestLocationPermissions(): Promise<boolean> {
   const { status: foreground } = await Location.requestForegroundPermissionsAsync();
@@ -49,6 +54,7 @@ export async function requestLocationPermissions(): Promise<boolean> {
 }
 
 export async function startGeofencing(reminder: Reminder): Promise<void> {
+  ensureGeofenceTaskDefined();
   if (
     !reminder.location_lat ||
     !reminder.location_lng ||
@@ -113,6 +119,7 @@ async function getActiveGeofenceRegions(): Promise<Location.LocationRegion[]> {
 }
 
 export async function reregisterAllGeofences(reminders: Reminder[]): Promise<void> {
+  ensureGeofenceTaskDefined();
   const locationReminders = reminders.filter(
     (r) =>
       r.type === 'location' &&

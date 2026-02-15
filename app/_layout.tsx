@@ -18,8 +18,8 @@ import { initDatabase } from '@/lib/database';
 import { startNetworkMonitor, stopNetworkMonitor } from '@/lib/network-monitor';
 import { fullSync, mergeGuestData } from '@/lib/sync-service';
 import { useReminderStore } from '@/stores/reminder-store';
-import { setupNotificationChannels, reregisterAllNotifications } from '@/lib/notifications';
-import { reregisterAllGeofences } from '@/lib/geofencing';
+import { ensureNotificationHandler, setupNotificationChannels, reregisterAllNotifications } from '@/lib/notifications';
+import { ensureGeofenceTaskDefined, reregisterAllGeofences } from '@/lib/geofencing';
 import * as repo from '@/lib/reminder-repository';
 
 SplashScreen.preventAutoHideAsync();
@@ -88,6 +88,10 @@ export default function RootLayout() {
     (async () => {
       // Initialize database
       await initDatabase();
+
+      // Initialize notification and geofence handlers
+      ensureNotificationHandler();
+      ensureGeofenceTaskDefined();
 
       // Setup notification channels
       await setupNotificationChannels();

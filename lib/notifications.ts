@@ -3,16 +3,23 @@ import { Platform } from 'react-native';
 
 import type { Reminder } from '@/types/reminder';
 
-// Configure notification behavior
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+// Configure notification behavior — called lazily to avoid module-level native calls
+let handlerSet = false;
+
+export function ensureNotificationHandler(): void {
+  if (handlerSet) return;
+  handlerSet = true;
+
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 export async function requestNotificationPermissions(): Promise<boolean> {
   const { status: existing } = await Notifications.getPermissionsAsync();
@@ -42,6 +49,7 @@ export async function setupNotificationChannels(): Promise<void> {
 }
 
 export async function scheduleTimeReminder(reminder: Reminder): Promise<string | null> {
+  ensureNotificationHandler();
   if (!reminder.date_time || reminder.is_completed) return null;
 
   const hasPermission = await requestNotificationPermissions();
