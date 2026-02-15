@@ -1,103 +1,269 @@
-import { View, Text, ScrollView } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
+import { useEffect } from 'react';
+import { View } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withTiming,
+  Easing,
+} from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
-import { Bell, MapPin, Cloud, Shield } from 'lucide-react-native';
-import { Button } from '@/components/ui';
-import { useAuthStore } from '@/stores/authStore';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
-const features = [
-  {
-    icon: Bell,
-    title: 'Smart Reminders',
-    description: 'Time-based notifications that never let you forget',
-  },
-  {
-    icon: MapPin,
-    title: 'Location Triggers',
-    description: 'Get reminded when you arrive at or leave a place',
-  },
-  {
-    icon: Cloud,
-    title: 'Cloud Sync',
-    description: 'Your reminders, synced across all your devices',
-  },
-  {
-    icon: Shield,
-    title: 'Offline First',
-    description: 'Works without internet, syncs when connected',
-  },
-];
+import { Button } from '@/components/ui/button';
+import { PageHeader } from '@/components/ui/page-header';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { useAuthStore } from '@/stores/auth-store';
+
+function FeatureChip({
+  icon,
+  title,
+  subtitle,
+  color,
+  surface,
+  text,
+  textSecondary,
+  border,
+}: {
+  icon: keyof typeof MaterialIcons.glyphMap;
+  title: string;
+  subtitle: string;
+  color: string;
+  surface: string;
+  text: string;
+  textSecondary: string;
+  border: string;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 14,
+        backgroundColor: surface,
+        borderRadius: 14,
+        padding: 14,
+        borderWidth: 1,
+        borderColor: border,
+      }}
+    >
+      <View
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 12,
+          backgroundColor: color + '15',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <MaterialIcons name={icon} size={20} color={color} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Animated.Text style={{ color: text, fontSize: 14, fontWeight: '600' }}>
+          {title}
+        </Animated.Text>
+        <Animated.Text style={{ color: textSecondary, fontSize: 12 }}>
+          {subtitle}
+        </Animated.Text>
+      </View>
+    </View>
+  );
+}
 
 export default function WelcomeScreen() {
   const router = useRouter();
-  const { continueAsGuest } = useAuthStore();
+  const insets = useSafeAreaInsets();
+  const textColor = useThemeColor({}, 'text');
+  const textSecondary = useThemeColor({}, 'textSecondary');
+  const backgroundColor = useThemeColor({}, 'background');
+  const primary = useThemeColor({}, 'primary');
+  const surface = useThemeColor({}, 'surface');
+  const border = useThemeColor({}, 'border');
+  const success = useThemeColor({}, 'success');
+  const setGuest = useAuthStore((s) => s.setGuest);
 
-  const handleGuest = async () => {
-    await continueAsGuest();
-    router.replace('/(tabs)');
-  };
+  // Animation values
+  const headerOpacity = useSharedValue(0);
+  const btn1Opacity = useSharedValue(0);
+  const btn1TranslateY = useSharedValue(20);
+  const btn2Opacity = useSharedValue(0);
+  const btn2TranslateY = useSharedValue(20);
+  const btn3Opacity = useSharedValue(0);
+  const btn3TranslateY = useSharedValue(20);
+  const midOpacity = useSharedValue(0);
+  const midTranslateY = useSharedValue(16);
+
+  useEffect(() => {
+    const easing = Easing.out(Easing.cubic);
+
+    headerOpacity.value = withTiming(1, { duration: 800, easing });
+
+    midOpacity.value = withDelay(300, withTiming(1, { duration: 600, easing }));
+    midTranslateY.value = withDelay(300, withTiming(0, { duration: 600, easing }));
+
+    btn1Opacity.value = withDelay(500, withTiming(1, { duration: 500, easing }));
+    btn1TranslateY.value = withDelay(500, withTiming(0, { duration: 500, easing }));
+    btn2Opacity.value = withDelay(600, withTiming(1, { duration: 500, easing }));
+    btn2TranslateY.value = withDelay(600, withTiming(0, { duration: 500, easing }));
+    btn3Opacity.value = withDelay(700, withTiming(1, { duration: 500, easing }));
+    btn3TranslateY.value = withDelay(700, withTiming(0, { duration: 500, easing }));
+  }, []);
+
+  const headerStyle = useAnimatedStyle(() => ({
+    opacity: headerOpacity.value,
+  }));
+
+  const btn1Style = useAnimatedStyle(() => ({
+    opacity: btn1Opacity.value,
+    transform: [{ translateY: btn1TranslateY.value }],
+  }));
+
+  const btn2Style = useAnimatedStyle(() => ({
+    opacity: btn2Opacity.value,
+    transform: [{ translateY: btn2TranslateY.value }],
+  }));
+
+  const btn3Style = useAnimatedStyle(() => ({
+    opacity: btn3Opacity.value,
+    transform: [{ translateY: btn3TranslateY.value }],
+  }));
+
+  const midStyle = useAnimatedStyle(() => ({
+    opacity: midOpacity.value,
+    transform: [{ translateY: midTranslateY.value }],
+  }));
 
   return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-      <ScrollView className="flex-1" contentContainerStyle={{ flexGrow: 1 }}>
-        <LinearGradient
-          colors={['#0ea5e9', '#0284c7']}
-          className="items-center px-6 pb-10 pt-16"
-        >
-          <Text className="text-4xl font-bold text-white">RemindMe Pro</Text>
-          <Text className="mt-2 text-center text-lg text-sky-100">
-            Never forget what matters most
-          </Text>
-        </LinearGradient>
-
-        <View className="flex-1 px-6 pt-8">
-          {features.map((feature) => (
+    <View style={{ flex: 1, backgroundColor }}>
+      {/* Primary header card */}
+      <Animated.View style={headerStyle}>
+        <PageHeader>
+          {/* Logo + Title */}
+          <View style={{ alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            {/* Icon-based logo */}
             <View
-              key={feature.title}
-              className="mb-4 flex-row items-start rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800"
+              style={{
+                width: 72,
+                height: 72,
+                borderRadius: 22,
+                backgroundColor: 'rgba(255,255,255,0.2)',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 2,
+                borderColor: 'rgba(255,255,255,0.3)',
+              }}
             >
-              <View className="mr-4 rounded-lg bg-sky-100 p-2 dark:bg-sky-900">
-                <feature.icon size={24} color="#0ea5e9" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-base font-semibold text-slate-800 dark:text-slate-100">
-                  {feature.title}
-                </Text>
-                <Text className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-                  {feature.description}
-                </Text>
+              <MaterialIcons name="notifications-active" size={36} color="#FFFFFF" />
+            </View>
+            {/* Stylised app name */}
+            <View style={{ alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+                <Animated.Text style={{ color: '#FFFFFF', fontSize: 28, fontWeight: '300', letterSpacing: -0.5 }}>
+                  remind
+                </Animated.Text>
+                <Animated.Text style={{ color: '#FFFFFF', fontSize: 28, fontWeight: '800', letterSpacing: -0.5 }}>
+                  me
+                </Animated.Text>
+                <Animated.Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 14, fontWeight: '600', marginLeft: 4 }}>
+                  PRO
+                </Animated.Text>
               </View>
             </View>
-          ))}
-        </View>
+            <Animated.Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 14 }}>
+              Never forget what matters most
+            </Animated.Text>
+          </View>
 
-        <View className="px-6 pb-8">
+        </PageHeader>
+      </Animated.View>
+
+      {/* Feature highlights */}
+      <Animated.View
+        style={[
+          midStyle,
+          {
+            flex: 1,
+            justifyContent: 'center',
+            paddingHorizontal: 24,
+            gap: 10,
+          },
+        ]}
+      >
+        <FeatureChip
+          icon="notifications-active"
+          title="Smart Reminders"
+          subtitle="Time-based alerts that keep you on track"
+          color={primary}
+          surface={surface}
+          text={textColor}
+          textSecondary={textSecondary}
+          border={border}
+        />
+        <FeatureChip
+          icon="location-on"
+          title="Location Reminders"
+          subtitle="Get alerted when you arrive or leave a place"
+          color={success}
+          surface={surface}
+          text={textColor}
+          textSecondary={textSecondary}
+          border={border}
+        />
+        <FeatureChip
+          icon="sync"
+          title="Cloud Sync"
+          subtitle="Access your reminders on any device"
+          color={primary}
+          surface={surface}
+          text={textColor}
+          textSecondary={textSecondary}
+          border={border}
+        />
+      </Animated.View>
+
+      {/* Bottom section — buttons */}
+      <View
+        style={{
+          paddingHorizontal: 32,
+          paddingBottom: insets.bottom + 24,
+          gap: 12,
+        }}
+      >
+        <Animated.View style={btn1Style}>
           <Button
-            variant="primary"
+            variant="filled"
             size="lg"
-            onPress={() => router.push('/(auth)/register')}
-            className="mb-3"
-          >
-            Get Started
-          </Button>
-          <Button
-            variant="outline"
-            size="lg"
-            onPress={() => router.push('/(auth)/login')}
-            className="mb-3"
+            onPress={() => router.push('/(auth)/sign-in')}
+            style={{ width: '100%' }}
           >
             Sign In
           </Button>
+        </Animated.View>
+
+        <Animated.View style={btn2Style}>
+          <Button
+            variant="outlined"
+            size="lg"
+            onPress={() => router.push('/(auth)/sign-up')}
+            style={{ width: '100%' }}
+          >
+            Create Account
+          </Button>
+        </Animated.View>
+
+        <Animated.View style={btn3Style}>
           <Button
             variant="ghost"
             size="lg"
-            onPress={handleGuest}
+            onPress={() => setGuest(true)}
+            style={{ width: '100%' }}
           >
             Continue as Guest
           </Button>
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+        </Animated.View>
+      </View>
+    </View>
   );
 }

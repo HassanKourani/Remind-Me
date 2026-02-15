@@ -1,416 +1,307 @@
 import { useState } from 'react';
-import { View, Text, ScrollView, Pressable, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useForm, Controller } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import * as Haptics from 'expo-haptics';
-import { X, Clock, MapPin, Tag } from 'lucide-react-native';
-import { Button, Input } from '@/components/ui';
-import { LocationPicker } from '@/components/location/LocationPicker';
-import { useCreateReminder, useUpdateReminder, useReminder, useReminderCount } from '@/hooks/useReminders';
-import { useAuthStore } from '@/stores/authStore';
-import { showInterstitialAd } from '@/services/ads/adService';
-import { Priority, DeliveryMethod } from '@/types/database';
-import { getDatabase } from '@/services/database/sqlite';
-import { useQuery } from '@tanstack/react-query';
 
-const FREE_REMINDER_LIMIT = 5;
-
-const createReminderSchema = z.object({
-  title: z.string().min(1, 'Title is required').max(200),
-  notes: z.string().max(1000).optional(),
-  type: z.enum(['time', 'location']),
-  triggerAt: z.string().optional(),
-  recurrenceRule: z.string().optional(),
-  latitude: z.number().optional(),
-  longitude: z.number().optional(),
-  radius: z.number().min(100).max(2000).optional(),
-  locationName: z.string().optional(),
-  triggerOn: z.enum(['enter', 'exit', 'both']).optional(),
-  isRecurringLocation: z.boolean().optional(),
-  deliveryMethod: z.enum(['notification', 'alarm']).optional(),
-  categoryId: z.string().optional(),
-  priority: z.enum(['low', 'medium', 'high']).optional(),
-}).refine(
-  (data) => {
-    if (data.type === 'time') {
-      if (!data.triggerAt) return false;
-      return new Date(data.triggerAt) > new Date();
-    }
-    return true;
-  },
-  { message: 'A future date and time must be provided', path: ['triggerAt'] }
-).refine(
-  (data) => {
-    if (data.type === 'location') {
-      return data.latitude !== undefined && data.longitude !== undefined;
-    }
-    return true;
-  },
-  { message: 'A location must be selected', path: ['latitude'] }
-);
-
-type CreateReminderForm = z.infer<typeof createReminderSchema>;
-
-const PRIORITIES: { key: Priority; label: string; color: string }[] = [
-  { key: 'low', label: 'Low', color: '#22c55e' },
-  { key: 'medium', label: 'Medium', color: '#f59e0b' },
-  { key: 'high', label: 'High', color: '#ef4444' },
-];
-
-const DELIVERY_METHODS: { key: DeliveryMethod; label: string }[] = [
-  { key: 'notification', label: 'Notification' },
-  { key: 'alarm', label: 'Alarm' },
-];
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { PageHeader } from '@/components/ui/page-header';
+import { TypeSelector } from '@/components/reminders/type-selector';
+import { PrioritySelector } from '@/components/reminders/priority-selector';
+import { CategorySelector } from '@/components/reminders/category-selector';
+import { RepeatSelector } from '@/components/reminders/repeat-selector';
+import { LocationPicker } from '@/components/location/location-picker';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { useAuthStore } from '@/stores/auth-store';
+import { useReminderStore } from '@/stores/reminder-store';
+import { useToastStore } from '@/stores/toast-store';
+import { useNetworkStore } from '@/stores/network-store';
+import { pushToCloud } from '@/lib/sync-service';
+import { scheduleTimeReminder } from '@/lib/notifications';
+import { startGeofencing } from '@/lib/geofencing';
+import type {
+  Category,
+  LocationNotify,
+  LocationTrigger,
+  Priority,
+  ReminderType,
+  RepeatType,
+} from '@/types/reminder';
 
 export default function CreateReminderScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string }>();
-  const isEditing = !!params.id;
+  const insets = useSafeAreaInsets();
+  const backgroundColor = useThemeColor({}, 'background');
+  const textSecondary = useThemeColor({}, 'textSecondary');
 
-  const { user } = useAuthStore();
-  const createMutation = useCreateReminder();
-  const updateMutation = useUpdateReminder();
-  const { data: existingReminder } = useReminder(params.id ?? '');
-  const { data: activeCount } = useReminderCount();
+  const isGuest = useAuthStore((s) => s.isGuest);
+  const user = useAuthStore((s) => s.user);
+  const isOnline = useNetworkStore((s) => s.isOnline);
+  const createReminder = useReminderStore((s) => s.createReminder);
+  const addToast = useToastStore((s) => s.addToast);
 
-  // Load categories
-  const { data: categories } = useQuery({
-    queryKey: ['categories', user?.id],
-    queryFn: async () => {
-      const db = await getDatabase();
-      return db.getAllAsync<{ id: string; name: string; color: string; icon: string }>(
-        'SELECT id, name, color, icon FROM categories WHERE user_id = ? ORDER BY sort_order ASC',
-        [user!.id]
-      );
-    },
-    enabled: !!user,
-  });
+  const ownerId = isGuest ? 'guest' : user?.id ?? '';
 
+  // Form state
+  const [type, setType] = useState<ReminderType>('time');
+  const [title, setTitle] = useState('');
+  const [notes, setNotes] = useState('');
+  const [priority, setPriority] = useState<Priority>('medium');
+  const [category, setCategory] = useState<Category>('personal');
+  const [titleError, setTitleError] = useState<string | null>(null);
+
+  // Time fields
+  const [dateTime, setDateTime] = useState(new Date(Date.now() + 60 * 60 * 1000)); // 1 hour from now
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(new Date(Date.now() + 3600000));
+  const [repeatConfig, setRepeatConfig] = useState<{
+    type: RepeatType;
+    interval: number | null;
+    unit: 'days' | 'weeks' | null;
+    days: number[] | null;
+  }>({ type: 'none', interval: null, unit: null, days: null });
 
-  const { control, handleSubmit, watch, setValue, formState: { errors } } = useForm<CreateReminderForm>({
-    resolver: zodResolver(createReminderSchema),
-    defaultValues: {
-      title: existingReminder?.title ?? '',
-      notes: existingReminder?.notes ?? '',
-      type: existingReminder?.type ?? 'time',
-      triggerAt: existingReminder?.triggerAt ?? new Date(Date.now() + 3600000).toISOString(),
-      deliveryMethod: existingReminder?.deliveryMethod ?? 'notification',
-      categoryId: existingReminder?.categoryId ?? undefined,
-      priority: existingReminder?.priority ?? 'medium',
-    },
-  });
+  // Location fields
+  const [locationLat, setLocationLat] = useState<number | null>(null);
+  const [locationLng, setLocationLng] = useState<number | null>(null);
+  const [locationAddress, setLocationAddress] = useState<string | null>(null);
+  const [locationRadius, setLocationRadius] = useState(200);
+  const [locationTrigger, setLocationTrigger] = useState<LocationTrigger>('enter');
+  const [locationNotify, setLocationNotify] = useState<LocationNotify>('every_time');
 
-  const reminderType = watch('type');
-  const selectedPriority = watch('priority');
-  const selectedDelivery = watch('deliveryMethod');
-  const selectedCategory = watch('categoryId');
+  const [isSaving, setIsSaving] = useState(false);
 
-  const onSubmit = async (data: CreateReminderForm) => {
-    // Check free tier limit
-    if (!isEditing && !user?.isPremium && (activeCount ?? 0) >= FREE_REMINDER_LIMIT) {
-      Alert.alert(
-        'Reminder Limit Reached',
-        `Free accounts are limited to ${FREE_REMINDER_LIMIT} active reminders. Upgrade to Premium for unlimited reminders.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Upgrade', onPress: () => router.push('/premium/') },
-        ]
-      );
+  const handleSave = async () => {
+    if (!title.trim()) {
+      setTitleError('Title is required');
       return;
     }
 
+    setIsSaving(true);
     try {
-      if (isEditing && params.id) {
-        await updateMutation.mutateAsync({ id: params.id, input: data });
-      } else {
-        await createMutation.mutateAsync(data);
-        // Show interstitial ad for free users after creation
-        if (!user?.isPremium) {
-          try { await showInterstitialAd(); } catch {}
-        }
+      const reminder = await createReminder(
+        {
+          owner_id: ownerId,
+          type,
+          title: title.trim(),
+          notes: notes.trim() || null,
+          priority,
+          category,
+          date_time: type === 'time' ? dateTime.toISOString() : null,
+          repeat_type: type === 'time' ? repeatConfig.type : 'none',
+          repeat_interval: type === 'time' ? repeatConfig.interval : null,
+          repeat_unit: type === 'time' ? repeatConfig.unit : null,
+          repeat_days: type === 'time' ? repeatConfig.days : null,
+          location_lat: type === 'location' ? locationLat : null,
+          location_lng: type === 'location' ? locationLng : null,
+          location_address: type === 'location' ? locationAddress : null,
+          location_radius: type === 'location' ? locationRadius : null,
+          location_trigger: type === 'location' ? locationTrigger : null,
+          location_notify: type === 'location' ? locationNotify : null,
+        },
+        isGuest,
+      );
+
+      // Schedule notification or geofence
+      if (type === 'time') {
+        await scheduleTimeReminder(reminder);
+      } else if (type === 'location' && locationLat && locationLng) {
+        await startGeofencing(reminder);
       }
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      // Push to cloud if signed in and online
+      if (!isGuest && user?.id && isOnline) {
+        pushToCloud(user.id).catch(() => {});
+      }
+
+      addToast({ type: 'success', title: 'Reminder created' });
       router.back();
-    } catch (error: any) {
-      Alert.alert('Error', error.message ?? 'Failed to save reminder');
+    } catch {
+      addToast({ type: 'error', title: 'Failed to create reminder' });
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-      <View className="flex-row items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
-        <Pressable onPress={() => router.back()}>
-          <X size={24} color="#64748b" />
-        </Pressable>
-        <Text className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-          {isEditing ? 'Edit Reminder' : 'New Reminder'}
-        </Text>
-        <View style={{ width: 24 }} />
-      </View>
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={{ flex: 1, backgroundColor }}
+    >
+      <PageHeader onBack={() => router.back()}>
+        <View style={{ gap: 4 }}>
+          <Animated.Text style={{ color: '#FFFFFF', fontSize: 24, fontWeight: '700' }}>
+            New Reminder
+          </Animated.Text>
+          <Animated.Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 14 }}>
+            What do you need to remember?
+          </Animated.Text>
+        </View>
+      </PageHeader>
 
-      <ScrollView className="flex-1 px-4" keyboardShouldPersistTaps="handled">
-        <View className="mt-4">
-          <Controller
-            control={control}
-            name="title"
-            render={({ field: { onChange, onBlur, value } }) => (
-              <Input
-                label="Title"
-                placeholder="What do you need to remember?"
-                onBlur={onBlur}
-                onChangeText={onChange}
-                value={value}
-                error={errors.title?.message}
-              />
-            )}
-          />
+      <ScrollView
+        contentContainerStyle={{
+          paddingHorizontal: 24,
+          paddingTop: 24,
+          paddingBottom: insets.bottom + 40,
+          gap: 20,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Type selector */}
+        <View style={{ gap: 6 }}>
+          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+            Type
+          </Animated.Text>
+          <TypeSelector value={type} onChange={setType} />
+        </View>
 
-          <Controller
-            control={control}
-            name="notes"
-            render={({ field: { onChange, onBlur, value } }) => (
-              <Input
-                label="Notes (optional)"
-                placeholder="Add any extra details..."
-                multiline
-                numberOfLines={3}
-                onBlur={onBlur}
-                onChangeText={onChange}
-                value={value}
-              />
-            )}
-          />
+        {/* Title */}
+        <Input
+          label="Title"
+          placeholder="Enter reminder title"
+          value={title}
+          onChangeText={(t) => {
+            setTitle(t);
+            setTitleError(null);
+          }}
+          error={titleError}
+        />
 
-          {/* Type selector */}
-          <Text className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-            Reminder Type
-          </Text>
-          <View className="mb-4 flex-row gap-2">
-            <Pressable
-              onPress={() => setValue('type', 'time')}
-              className={`flex-1 flex-row items-center justify-center rounded-xl border py-3 ${
-                reminderType === 'time'
-                  ? 'border-sky-500 bg-sky-50 dark:bg-sky-900/30'
-                  : 'border-slate-200 dark:border-slate-700'
-              }`}
-            >
-              <Clock size={18} color={reminderType === 'time' ? '#0ea5e9' : '#94a3b8'} />
-              <Text className={`ml-2 font-medium ${
-                reminderType === 'time' ? 'text-sky-600' : 'text-slate-500 dark:text-slate-400'
-              }`}>
-                Time
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                if (!user?.isPremium) {
-                  Alert.alert('Premium Feature', 'Location reminders require a premium subscription.', [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Upgrade', onPress: () => router.push('/premium/') },
-                  ]);
-                  return;
-                }
-                setValue('type', 'location');
-              }}
-              className={`flex-1 flex-row items-center justify-center rounded-xl border py-3 ${
-                reminderType === 'location'
-                  ? 'border-sky-500 bg-sky-50 dark:bg-sky-900/30'
-                  : 'border-slate-200 dark:border-slate-700'
-              }`}
-            >
-              <MapPin size={18} color={reminderType === 'location' ? '#0ea5e9' : '#94a3b8'} />
-              <Text className={`ml-2 font-medium ${
-                reminderType === 'location' ? 'text-sky-600' : 'text-slate-500 dark:text-slate-400'
-              }`}>
-                Location
-              </Text>
-              {!user?.isPremium && (
-                <Text className="ml-1 text-xs text-amber-500">PRO</Text>
-              )}
-            </Pressable>
-          </View>
+        {/* Notes */}
+        <Input
+          label="Notes (optional)"
+          placeholder="Add some details..."
+          value={notes}
+          onChangeText={setNotes}
+          multiline
+          numberOfLines={3}
+          style={{ height: 80, textAlignVertical: 'top', paddingTop: 12 }}
+        />
 
-          {/* Time picker section */}
-          {reminderType === 'time' && (
-            <View className="mb-4">
-              <Text className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+        {/* Priority */}
+        <View style={{ gap: 6 }}>
+          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+            Priority
+          </Animated.Text>
+          <PrioritySelector value={priority} onChange={setPriority} />
+        </View>
+
+        {/* Category */}
+        <View style={{ gap: 6 }}>
+          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+            Category
+          </Animated.Text>
+          <CategorySelector value={category} onChange={setCategory} />
+        </View>
+
+        {/* Time-specific fields */}
+        {type === 'time' && (
+          <View style={{ gap: 16 }}>
+            {/* Date picker */}
+            <View style={{ gap: 6 }}>
+              <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
                 Date & Time
-              </Text>
-              <View className="flex-row gap-2">
+              </Animated.Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
                 <Pressable
                   onPress={() => setShowDatePicker(true)}
-                  className="flex-1 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-700"
+                  style={{
+                    flex: 1,
+                    backgroundColor: useThemeColor({}, 'surface'),
+                    borderRadius: 12,
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                    borderWidth: 1,
+                    borderColor: useThemeColor({}, 'border'),
+                  }}
                 >
-                  <Text className="text-base text-slate-800 dark:text-slate-100">
-                    {selectedDate.toLocaleDateString()}
-                  </Text>
+                  <Animated.Text style={{ color: useThemeColor({}, 'text'), fontSize: 15 }}>
+                    {dateTime.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </Animated.Text>
                 </Pressable>
                 <Pressable
                   onPress={() => setShowTimePicker(true)}
-                  className="flex-1 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-700"
+                  style={{
+                    flex: 1,
+                    backgroundColor: useThemeColor({}, 'surface'),
+                    borderRadius: 12,
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                    borderWidth: 1,
+                    borderColor: useThemeColor({}, 'border'),
+                  }}
                 >
-                  <Text className="text-base text-slate-800 dark:text-slate-100">
-                    {selectedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </Text>
+                  <Animated.Text style={{ color: useThemeColor({}, 'text'), fontSize: 15 }}>
+                    {dateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Animated.Text>
                 </Pressable>
               </View>
-              {errors.triggerAt && (
-                <Text className="mt-1 text-sm text-red-500">{errors.triggerAt.message}</Text>
-              )}
-
               {showDatePicker && (
                 <DateTimePicker
-                  value={selectedDate}
+                  value={dateTime}
                   mode="date"
                   minimumDate={new Date()}
                   onChange={(_, date) => {
                     setShowDatePicker(false);
                     if (date) {
-                      const newDate = new Date(selectedDate);
+                      const newDate = new Date(dateTime);
                       newDate.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
-                      setSelectedDate(newDate);
-                      setValue('triggerAt', newDate.toISOString());
+                      setDateTime(newDate);
                     }
                   }}
                 />
               )}
               {showTimePicker && (
                 <DateTimePicker
-                  value={selectedDate}
+                  value={dateTime}
                   mode="time"
                   onChange={(_, date) => {
                     setShowTimePicker(false);
                     if (date) {
-                      const newDate = new Date(selectedDate);
+                      const newDate = new Date(dateTime);
                       newDate.setHours(date.getHours(), date.getMinutes());
-                      setSelectedDate(newDate);
-                      setValue('triggerAt', newDate.toISOString());
+                      setDateTime(newDate);
                     }
                   }}
                 />
               )}
             </View>
-          )}
 
-          {/* Location section */}
-          {reminderType === 'location' && (
-            <View className="mb-4">
-              <LocationPicker
-                latitude={existingReminder?.latitude}
-                longitude={existingReminder?.longitude}
-                radius={existingReminder?.radius ?? 200}
-                locationName={existingReminder?.locationName}
-                triggerOn={existingReminder?.triggerOn ?? 'enter'}
-                isRecurringLocation={existingReminder?.isRecurringLocation ?? false}
-                onLocationChange={(data) => {
-                  setValue('latitude', data.latitude);
-                  setValue('longitude', data.longitude);
-                  setValue('locationName', data.locationName);
-                  setValue('radius', data.radius);
-                  setValue('triggerOn', data.triggerOn);
-                  setValue('isRecurringLocation', data.isRecurringLocation);
-                }}
-              />
-              {errors.latitude && (
-                <Text className="mt-1 text-sm text-red-500">{errors.latitude.message}</Text>
-              )}
-            </View>
-          )}
-
-          {/* Category selector */}
-          <Text className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-            Category
-          </Text>
-          <View className="mb-4 flex-row flex-wrap gap-2">
-            {(categories ?? []).map((cat) => (
-              <Pressable
-                key={cat.id}
-                onPress={() => setValue('categoryId', selectedCategory === cat.id ? undefined : cat.id)}
-                className={`flex-row items-center rounded-full border px-3 py-2 ${
-                  selectedCategory === cat.id
-                    ? 'border-sky-500 bg-sky-50 dark:bg-sky-900/30'
-                    : 'border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                <View style={{ backgroundColor: cat.color }} className="h-3 w-3 rounded-full" />
-                <Text className={`ml-2 text-sm ${
-                  selectedCategory === cat.id
-                    ? 'font-medium text-sky-600'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}>
-                  {cat.name}
-                </Text>
-              </Pressable>
-            ))}
+            {/* Repeat */}
+            <RepeatSelector value={repeatConfig} onChange={setRepeatConfig} />
           </View>
+        )}
 
-          {/* Priority */}
-          <Text className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-            Priority
-          </Text>
-          <View className="mb-4 flex-row gap-2">
-            {PRIORITIES.map((p) => (
-              <Pressable
-                key={p.key}
-                onPress={() => setValue('priority', p.key)}
-                className={`flex-1 items-center rounded-xl border py-3 ${
-                  selectedPriority === p.key
-                    ? 'border-sky-500 bg-sky-50 dark:bg-sky-900/30'
-                    : 'border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                <View style={{ backgroundColor: p.color }} className="mb-1 h-3 w-3 rounded-full" />
-                <Text className={`text-sm ${
-                  selectedPriority === p.key ? 'font-medium text-sky-600' : 'text-slate-500 dark:text-slate-400'
-                }`}>
-                  {p.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+        {/* Location-specific fields */}
+        {type === 'location' && (
+          <LocationPicker
+            lat={locationLat}
+            lng={locationLng}
+            address={locationAddress}
+            radius={locationRadius}
+            trigger={locationTrigger}
+            notify={locationNotify}
+            onLocationChange={(lat, lng, address) => {
+              setLocationLat(lat);
+              setLocationLng(lng);
+              setLocationAddress(address);
+            }}
+            onRadiusChange={setLocationRadius}
+            onTriggerChange={setLocationTrigger}
+            onNotifyChange={setLocationNotify}
+          />
+        )}
 
-          {/* Delivery method */}
-          <Text className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-            Delivery Method
-          </Text>
-          <View className="mb-6 flex-row gap-2">
-            {DELIVERY_METHODS.map((d) => (
-              <Pressable
-                key={d.key}
-                onPress={() => setValue('deliveryMethod', d.key)}
-                className={`flex-1 items-center rounded-xl border py-3 ${
-                  selectedDelivery === d.key
-                    ? 'border-sky-500 bg-sky-50 dark:bg-sky-900/30'
-                    : 'border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                <Text className={`text-sm ${
-                  selectedDelivery === d.key ? 'font-medium text-sky-600' : 'text-slate-500 dark:text-slate-400'
-                }`}>
-                  {d.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <Button
-            variant="primary"
-            size="lg"
-            onPress={handleSubmit(onSubmit)}
-            loading={createMutation.isPending || updateMutation.isPending}
-            className="mb-8"
-          >
-            {isEditing ? 'Save Changes' : 'Create Reminder'}
+        {/* Save button */}
+        <View style={{ marginTop: 8 }}>
+          <Button variant="filled" size="lg" loading={isSaving} onPress={handleSave}>
+            Create Reminder
           </Button>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }

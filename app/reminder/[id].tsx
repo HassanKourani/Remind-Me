@@ -1,52 +1,175 @@
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { format, isPast } from 'date-fns';
-import * as Haptics from 'expo-haptics';
-import {
-  ArrowLeft, Edit3, Trash2, Clock, MapPin, Bell, AlarmClock,
-  CheckCircle, Circle, Tag, Repeat
-} from 'lucide-react-native';
-import { useReminder, useCompleteReminder, useDeleteReminder, useUncompleteReminder } from '@/hooks/useReminders';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
+import { useEffect, useState } from 'react';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { Pressable } from 'react-native';
 
-const PRIORITY_COLORS: Record<string, string> = {
-  low: '#22c55e',
-  medium: '#f59e0b',
-  high: '#ef4444',
-};
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { PageHeader } from '@/components/ui/page-header';
+import { TypeSelector } from '@/components/reminders/type-selector';
+import { PrioritySelector } from '@/components/reminders/priority-selector';
+import { CategorySelector } from '@/components/reminders/category-selector';
+import { RepeatSelector } from '@/components/reminders/repeat-selector';
+import { LocationPicker } from '@/components/location/location-picker';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { useAuthStore } from '@/stores/auth-store';
+import { useReminderStore } from '@/stores/reminder-store';
+import { useToastStore } from '@/stores/toast-store';
+import { useNetworkStore } from '@/stores/network-store';
+import { pushToCloud } from '@/lib/sync-service';
+import { scheduleTimeReminder, cancelNotification } from '@/lib/notifications';
+import { startGeofencing, stopGeofencing } from '@/lib/geofencing';
+import { getReminderById } from '@/lib/reminder-repository';
+import type {
+  Category,
+  LocationNotify,
+  LocationTrigger,
+  Priority,
+  Reminder,
+  ReminderType,
+  RepeatType,
+} from '@/types/reminder';
 
-const PRIORITY_LABELS: Record<string, string> = {
-  low: 'Low Priority',
-  medium: 'Medium Priority',
-  high: 'High Priority',
-};
-
-export default function ReminderDetailScreen() {
-  const router = useRouter();
+export default function EditReminderScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { data: reminder, isLoading } = useReminder(id!);
-  const completeMutation = useCompleteReminder();
-  const uncompleteMutation = useUncompleteReminder();
-  const deleteMutation = useDeleteReminder();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const backgroundColor = useThemeColor({}, 'background');
+  const textSecondary = useThemeColor({}, 'textSecondary');
+  const error = useThemeColor({}, 'error');
 
-  if (isLoading || !reminder) {
-    return (
-      <SafeAreaView className="flex-1 items-center justify-center bg-white dark:bg-slate-900">
-        <ActivityIndicator size="large" color="#0ea5e9" />
-      </SafeAreaView>
-    );
-  }
+  const isGuest = useAuthStore((s) => s.isGuest);
+  const user = useAuthStore((s) => s.user);
+  const isOnline = useNetworkStore((s) => s.isOnline);
+  const updateReminder = useReminderStore((s) => s.updateReminder);
+  const deleteReminder = useReminderStore((s) => s.deleteReminder);
+  const addToast = useToastStore((s) => s.addToast);
 
-  const isOverdue = reminder.type === 'time' && reminder.triggerAt && !reminder.isCompleted && isPast(new Date(reminder.triggerAt));
+  const [reminder, setReminder] = useState<Reminder | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
 
-  const handleComplete = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (reminder.isCompleted) {
-      uncompleteMutation.mutate(id!);
-    } else {
-      completeMutation.mutate(id!);
+  // Form state
+  const [type, setType] = useState<ReminderType>('time');
+  const [title, setTitle] = useState('');
+  const [notes, setNotes] = useState('');
+  const [priority, setPriority] = useState<Priority>('medium');
+  const [category, setCategory] = useState<Category>('personal');
+  const [titleError, setTitleError] = useState<string | null>(null);
+
+  // Time fields
+  const [dateTime, setDateTime] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [repeatConfig, setRepeatConfig] = useState<{
+    type: RepeatType;
+    interval: number | null;
+    unit: 'days' | 'weeks' | null;
+    days: number[] | null;
+  }>({ type: 'none', interval: null, unit: null, days: null });
+
+  // Location fields
+  const [locationLat, setLocationLat] = useState<number | null>(null);
+  const [locationLng, setLocationLng] = useState<number | null>(null);
+  const [locationAddress, setLocationAddress] = useState<string | null>(null);
+  const [locationRadius, setLocationRadius] = useState(200);
+  const [locationTrigger, setLocationTrigger] = useState<LocationTrigger>('enter');
+  const [locationNotify, setLocationNotify] = useState<LocationNotify>('every_time');
+
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (!id) return;
+    (async () => {
+      const r = await getReminderById(id);
+      if (r) {
+        setReminder(r);
+        setType(r.type);
+        setTitle(r.title);
+        setNotes(r.notes ?? '');
+        setPriority(r.priority);
+        setCategory(r.category);
+        if (r.date_time) setDateTime(new Date(r.date_time));
+        setRepeatConfig({
+          type: r.repeat_type,
+          interval: r.repeat_interval,
+          unit: r.repeat_unit,
+          days: r.repeat_days,
+        });
+        setLocationLat(r.location_lat);
+        setLocationLng(r.location_lng);
+        setLocationAddress(r.location_address);
+        setLocationRadius(r.location_radius ?? 200);
+        setLocationTrigger(r.location_trigger ?? 'enter');
+        setLocationNotify(r.location_notify ?? 'every_time');
+      }
+      setIsLoaded(true);
+    })();
+  }, [id]);
+
+  const handleSave = async () => {
+    if (!title.trim()) {
+      setTitleError('Title is required');
+      return;
+    }
+    if (!id) return;
+
+    setIsSaving(true);
+    try {
+      // Cancel existing notification/geofence
+      if (reminder) {
+        if (reminder.type === 'time') {
+          await cancelNotification(reminder.id);
+        } else {
+          await stopGeofencing(reminder.id);
+        }
+      }
+
+      await updateReminder(
+        id,
+        {
+          type,
+          title: title.trim(),
+          notes: notes.trim() || null,
+          priority,
+          category,
+          date_time: type === 'time' ? dateTime.toISOString() : null,
+          repeat_type: type === 'time' ? repeatConfig.type : 'none',
+          repeat_interval: type === 'time' ? repeatConfig.interval : null,
+          repeat_unit: type === 'time' ? repeatConfig.unit : null,
+          repeat_days: type === 'time' ? repeatConfig.days : null,
+          location_lat: type === 'location' ? locationLat : null,
+          location_lng: type === 'location' ? locationLng : null,
+          location_address: type === 'location' ? locationAddress : null,
+          location_radius: type === 'location' ? locationRadius : null,
+          location_trigger: type === 'location' ? locationTrigger : null,
+          location_notify: type === 'location' ? locationNotify : null,
+        },
+        isGuest,
+      );
+
+      // Reschedule
+      const updated = await getReminderById(id);
+      if (updated) {
+        if (updated.type === 'time') {
+          await scheduleTimeReminder(updated);
+        } else if (updated.type === 'location' && updated.location_lat && updated.location_lng) {
+          await startGeofencing(updated);
+        }
+      }
+
+      if (!isGuest && user?.id && isOnline) {
+        pushToCloud(user.id).catch(() => {});
+      }
+
+      addToast({ type: 'success', title: 'Reminder updated' });
+      router.back();
+    } catch {
+      addToast({ type: 'error', title: 'Failed to update reminder' });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -57,151 +180,222 @@ export default function ReminderDetailScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          deleteMutation.mutate(id!);
+          if (!id) return;
+          // Cancel notification/geofence
+          if (reminder) {
+            if (reminder.type === 'time') {
+              await cancelNotification(reminder.id);
+            } else {
+              await stopGeofencing(reminder.id);
+            }
+          }
+          await deleteReminder(id, isGuest);
+          if (!isGuest && user?.id && isOnline) {
+            pushToCloud(user.id).catch(() => {});
+          }
+          addToast({ type: 'success', title: 'Reminder deleted' });
           router.back();
         },
       },
     ]);
   };
 
-  return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-      {/* Header */}
-      <View className="flex-row items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
-        <Pressable onPress={() => router.back()}>
-          <ArrowLeft size={24} color="#64748b" />
-        </Pressable>
-        <View className="flex-row gap-4">
-          <Pressable onPress={() => router.push(`/reminder/create?id=${id}`)}>
-            <Edit3 size={22} color="#0ea5e9" />
-          </Pressable>
-          <Pressable onPress={handleDelete}>
-            <Trash2 size={22} color="#ef4444" />
-          </Pressable>
-        </View>
+  if (!isLoaded) {
+    return <View style={{ flex: 1, backgroundColor }} />;
+  }
+
+  if (!reminder) {
+    return (
+      <View style={{ flex: 1, backgroundColor, justifyContent: 'center', alignItems: 'center' }}>
+        <Animated.Text style={{ color: textSecondary, fontSize: 16 }}>
+          Reminder not found
+        </Animated.Text>
       </View>
+    );
+  }
 
-      <ScrollView className="flex-1 px-4">
-        <View className="mt-6">
-          {/* Priority bar */}
-          <View
-            style={{ backgroundColor: PRIORITY_COLORS[reminder.priority] }}
-            className="mb-4 h-1 rounded-full"
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={{ flex: 1, backgroundColor }}
+    >
+      <PageHeader onBack={() => router.back()}>
+        <View style={{ gap: 4 }}>
+          <Animated.Text style={{ color: '#FFFFFF', fontSize: 24, fontWeight: '700' }}>
+            Edit Reminder
+          </Animated.Text>
+          <Animated.Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 14 }}>
+            Update your reminder details
+          </Animated.Text>
+        </View>
+      </PageHeader>
+
+      <ScrollView
+        contentContainerStyle={{
+          paddingHorizontal: 24,
+          paddingTop: 24,
+          paddingBottom: insets.bottom + 40,
+          gap: 20,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Type selector */}
+        <View style={{ gap: 6 }}>
+          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+            Type
+          </Animated.Text>
+          <TypeSelector value={type} onChange={setType} />
+        </View>
+
+        {/* Title */}
+        <Input
+          label="Title"
+          placeholder="Enter reminder title"
+          value={title}
+          onChangeText={(t) => {
+            setTitle(t);
+            setTitleError(null);
+          }}
+          error={titleError}
+        />
+
+        {/* Notes */}
+        <Input
+          label="Notes (optional)"
+          placeholder="Add some details..."
+          value={notes}
+          onChangeText={setNotes}
+          multiline
+          numberOfLines={3}
+          style={{ height: 80, textAlignVertical: 'top', paddingTop: 12 }}
+        />
+
+        {/* Priority */}
+        <View style={{ gap: 6 }}>
+          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+            Priority
+          </Animated.Text>
+          <PrioritySelector value={priority} onChange={setPriority} />
+        </View>
+
+        {/* Category */}
+        <View style={{ gap: 6 }}>
+          <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+            Category
+          </Animated.Text>
+          <CategorySelector value={category} onChange={setCategory} />
+        </View>
+
+        {/* Time-specific fields */}
+        {type === 'time' && (
+          <View style={{ gap: 16 }}>
+            <View style={{ gap: 6 }}>
+              <Animated.Text style={{ color: textSecondary, fontSize: 14, fontWeight: '500' }}>
+                Date & Time
+              </Animated.Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Pressable
+                  onPress={() => setShowDatePicker(true)}
+                  style={{
+                    flex: 1,
+                    backgroundColor: useThemeColor({}, 'surface'),
+                    borderRadius: 12,
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                    borderWidth: 1,
+                    borderColor: useThemeColor({}, 'border'),
+                  }}
+                >
+                  <Animated.Text style={{ color: useThemeColor({}, 'text'), fontSize: 15 }}>
+                    {dateTime.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                  </Animated.Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setShowTimePicker(true)}
+                  style={{
+                    flex: 1,
+                    backgroundColor: useThemeColor({}, 'surface'),
+                    borderRadius: 12,
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                    borderWidth: 1,
+                    borderColor: useThemeColor({}, 'border'),
+                  }}
+                >
+                  <Animated.Text style={{ color: useThemeColor({}, 'text'), fontSize: 15 }}>
+                    {dateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Animated.Text>
+                </Pressable>
+              </View>
+              {showDatePicker && (
+                <DateTimePicker
+                  value={dateTime}
+                  mode="date"
+                  minimumDate={new Date()}
+                  onChange={(_, date) => {
+                    setShowDatePicker(false);
+                    if (date) {
+                      const newDate = new Date(dateTime);
+                      newDate.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+                      setDateTime(newDate);
+                    }
+                  }}
+                />
+              )}
+              {showTimePicker && (
+                <DateTimePicker
+                  value={dateTime}
+                  mode="time"
+                  onChange={(_, date) => {
+                    setShowTimePicker(false);
+                    if (date) {
+                      const newDate = new Date(dateTime);
+                      newDate.setHours(date.getHours(), date.getMinutes());
+                      setDateTime(newDate);
+                    }
+                  }}
+                />
+              )}
+            </View>
+
+            <RepeatSelector value={repeatConfig} onChange={setRepeatConfig} />
+          </View>
+        )}
+
+        {/* Location-specific fields */}
+        {type === 'location' && (
+          <LocationPicker
+            lat={locationLat}
+            lng={locationLng}
+            address={locationAddress}
+            radius={locationRadius}
+            trigger={locationTrigger}
+            notify={locationNotify}
+            onLocationChange={(lat, lng, address) => {
+              setLocationLat(lat);
+              setLocationLng(lng);
+              setLocationAddress(address);
+            }}
+            onRadiusChange={setLocationRadius}
+            onTriggerChange={setLocationTrigger}
+            onNotifyChange={setLocationNotify}
           />
+        )}
 
-          {/* Title */}
-          <Text
-            className={`text-2xl font-bold ${
-              reminder.isCompleted
-                ? 'text-slate-400 line-through dark:text-slate-500'
-                : 'text-slate-800 dark:text-slate-100'
-            }`}
+        {/* Action buttons */}
+        <View style={{ gap: 12, marginTop: 8 }}>
+          <Button variant="filled" size="lg" loading={isSaving} onPress={handleSave}>
+            Save Changes
+          </Button>
+          <Button
+            variant="ghost"
+            size="md"
+            onPress={handleDelete}
           >
-            {reminder.title}
-          </Text>
-
-          {/* Notes */}
-          {reminder.notes && (
-            <Text className="mt-3 text-base leading-6 text-slate-600 dark:text-slate-400">
-              {reminder.notes}
-            </Text>
-          )}
-
-          {/* Badges row */}
-          <View className="mt-4 flex-row flex-wrap gap-2">
-            <Badge variant={isOverdue ? 'danger' : reminder.isCompleted ? 'success' : 'default'}>
-              {reminder.isCompleted ? 'Completed' : isOverdue ? 'Overdue' : 'Active'}
-            </Badge>
-
-            <Badge variant="warning">
-              {PRIORITY_LABELS[reminder.priority]}
-            </Badge>
-
-            {reminder.deliveryMethod === 'alarm' && (
-              <Badge variant="info">Alarm</Badge>
-            )}
-
-            {reminder.recurrenceRule && (
-              <Badge variant="info">Recurring</Badge>
-            )}
-          </View>
-
-          {/* Time info */}
-          {reminder.type === 'time' && reminder.triggerAt && (
-            <View className="mt-6 flex-row items-center rounded-xl bg-slate-50 p-4 dark:bg-slate-800">
-              <Clock size={22} color="#0ea5e9" />
-              <View className="ml-3">
-                <Text className="text-sm text-slate-500 dark:text-slate-400">Scheduled for</Text>
-                <Text className="text-base font-semibold text-slate-800 dark:text-slate-100">
-                  {format(new Date(reminder.triggerAt), 'EEEE, MMMM d, yyyy')}
-                </Text>
-                <Text className="text-sm text-slate-600 dark:text-slate-400">
-                  {format(new Date(reminder.triggerAt), 'h:mm a')}
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {/* Location info */}
-          {reminder.type === 'location' && reminder.locationName && (
-            <View className="mt-6 flex-row items-center rounded-xl bg-slate-50 p-4 dark:bg-slate-800">
-              <MapPin size={22} color="#0ea5e9" />
-              <View className="ml-3">
-                <Text className="text-sm text-slate-500 dark:text-slate-400">Location</Text>
-                <Text className="text-base font-semibold text-slate-800 dark:text-slate-100">
-                  {reminder.locationName}
-                </Text>
-                <Text className="text-sm text-slate-600 dark:text-slate-400">
-                  Trigger on: {reminder.triggerOn} • Radius: {reminder.radius}m
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {/* Completed info */}
-          {reminder.isCompleted && reminder.completedAt && (
-            <View className="mt-4 flex-row items-center rounded-xl bg-green-50 p-4 dark:bg-green-900/20">
-              <CheckCircle size={22} color="#22c55e" />
-              <View className="ml-3">
-                <Text className="text-sm text-green-600 dark:text-green-400">Completed</Text>
-                <Text className="text-base text-green-700 dark:text-green-300">
-                  {format(new Date(reminder.completedAt), 'MMM d, yyyy h:mm a')}
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {/* Action buttons */}
-          <View className="mt-8 gap-3">
-            <Button
-              variant={reminder.isCompleted ? 'outline' : 'primary'}
-              size="lg"
-              onPress={handleComplete}
-            >
-              {reminder.isCompleted ? 'Mark as Incomplete' : 'Mark as Complete'}
-            </Button>
-
-            <Button
-              variant="danger"
-              size="lg"
-              onPress={handleDelete}
-            >
-              Delete Reminder
-            </Button>
-          </View>
-
-          {/* Metadata */}
-          <View className="mb-8 mt-6 rounded-xl bg-slate-50 p-4 dark:bg-slate-800">
-            <Text className="text-xs text-slate-500 dark:text-slate-400">
-              Created: {format(new Date(reminder.createdAt), 'MMM d, yyyy h:mm a')}
-            </Text>
-            <Text className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Last updated: {format(new Date(reminder.updatedAt), 'MMM d, yyyy h:mm a')}
-            </Text>
-          </View>
+            Delete Reminder
+          </Button>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }

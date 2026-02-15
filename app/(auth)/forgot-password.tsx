@@ -1,102 +1,112 @@
 import { useState } from 'react';
-import { View, Text, ScrollView, Alert, Pressable } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
-import { useForm, Controller } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { Mail, ArrowLeft } from 'lucide-react-native';
-import { Button, Input } from '@/components/ui';
-import { authService } from '@/services/supabase/auth';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
-const forgotSchema = z.object({
-  email: z.string().min(1, 'Email is required').email('Invalid email address'),
-});
-
-type ForgotForm = z.infer<typeof forgotSchema>;
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { PageHeader } from '@/components/ui/page-header';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { supabase } from '@/lib/supabase';
+import { validateEmail } from '@/lib/validation';
+import { useToastStore } from '@/stores/toast-store';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [sent, setSent] = useState(false);
+  const insets = useSafeAreaInsets();
+  const addToast = useToastStore((s) => s.addToast);
 
-  const { control, handleSubmit, formState: { errors } } = useForm<ForgotForm>({
-    resolver: zodResolver(forgotSchema),
-    defaultValues: { email: '' },
-  });
+  const backgroundColor = useThemeColor({}, 'background');
 
-  const onSubmit = async (data: ForgotForm) => {
-    try {
-      setLoading(true);
-      await authService.resetPassword(data.email);
-      setSent(true);
-    } catch (error: any) {
-      Alert.alert('Error', error.message ?? 'Failed to send reset email.');
-    } finally {
-      setLoading(false);
+  const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleReset = async () => {
+    const eError = validateEmail(email);
+    setEmailError(eError);
+    if (eError) return;
+
+    setIsLoading(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    setIsLoading(false);
+
+    if (error) {
+      addToast({ type: 'error', title: 'Reset failed', message: error.message });
+      return;
     }
+
+    addToast({
+      type: 'success',
+      title: 'Check your email',
+      message: 'We sent you a link to reset your password.',
+    });
+    router.back();
   };
 
-  if (sent) {
-    return (
-      <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-        <View className="flex-1 items-center justify-center px-6">
-          <Text className="mb-4 text-2xl font-bold text-slate-800 dark:text-slate-100">
-            Check your email
-          </Text>
-          <Text className="mb-8 text-center text-base text-slate-500 dark:text-slate-400">
-            We've sent a password reset link to your email address.
-          </Text>
-          <Button variant="primary" size="lg" onPress={() => router.replace('/(auth)/login')}>
-            Back to Sign In
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={{ flex: 1, backgroundColor }}
+    >
+      {/* Primary header card */}
+      <PageHeader onBack={() => router.back()}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+          <View
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: 'rgba(255,255,255,0.2)',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <MaterialIcons name="lock-reset" size={24} color="#FFFFFF" />
+          </View>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Animated.Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '700' }}>
+              Reset password
+            </Animated.Text>
+            <Animated.Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 14 }}>
+              We'll send you a reset link
+            </Animated.Text>
+          </View>
+        </View>
+      </PageHeader>
+
+      {/* Form content below */}
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingHorizontal: 32,
+          paddingTop: 28,
+          paddingBottom: insets.bottom + 24,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={{ gap: 16 }}>
+          <Input
+            label="Email"
+            placeholder="you@example.com"
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoComplete="email"
+            value={email}
+            onChangeText={(t) => {
+              setEmail(t);
+              setEmailError(null);
+            }}
+            error={emailError}
+          />
+
+          <Button variant="filled" size="lg" loading={isLoading} onPress={handleReset}>
+            Send Reset Link
           </Button>
         </View>
-      </SafeAreaView>
-    );
-  }
-
-  return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-      <ScrollView className="flex-1 px-6" keyboardShouldPersistTaps="handled">
-        <Pressable onPress={() => router.back()} className="mb-4 mt-4">
-          <ArrowLeft size={24} color="#64748b" />
-        </Pressable>
-
-        <Text className="mb-2 text-3xl font-bold text-slate-800 dark:text-slate-100">
-          Forgot password?
-        </Text>
-        <Text className="mb-8 text-base text-slate-500 dark:text-slate-400">
-          Enter your email and we'll send you a reset link
-        </Text>
-
-        <Controller
-          control={control}
-          name="email"
-          render={({ field: { onChange, onBlur, value } }) => (
-            <Input
-              label="Email"
-              icon={<Mail size={20} color="#94a3b8" />}
-              placeholder="you@example.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoComplete="email"
-              onBlur={onBlur}
-              onChangeText={onChange}
-              value={value}
-              error={errors.email?.message}
-            />
-          )}
-        />
-
-        <Button
-          variant="primary"
-          size="lg"
-          onPress={handleSubmit(onSubmit)}
-          loading={loading}
-        >
-          Send Reset Link
-        </Button>
       </ScrollView>
-    </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }

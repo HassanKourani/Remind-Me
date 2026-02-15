@@ -1,187 +1,285 @@
-import { useState, useCallback, useRef } from 'react';
-import { View, Text, FlatList, RefreshControl, Pressable, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useMemo } from 'react';
+import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRouter } from 'expo-router';
-import { Plus } from 'lucide-react-native';
-import { useTodayReminders, useReminderCount, useCompletedTodayCount, useCompleteReminder, useUncompleteReminder } from '@/hooks/useReminders';
-import { useSyncOnRefresh } from '@/hooks/useSync';
-import { useAuthStore } from '@/stores/authStore';
-import { ReminderCard } from '@/components/reminders/ReminderCard';
-import { Card } from '@/components/ui/Card';
-import { Snackbar } from '@/components/ui/Snackbar';
-import { BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
-import { getBannerAdUnitId } from '@/services/ads/adService';
 
-function getGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
-}
+import { PageHeader } from '@/components/ui/page-header';
+import { NetworkIndicator } from '@/components/ui/network-indicator';
+import { ReminderCard } from '@/components/reminders/reminder-card';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { useAuthStore } from '@/stores/auth-store';
+import { useReminderStore } from '@/stores/reminder-store';
+import { fullSync } from '@/lib/sync-service';
 
-export default function TodayScreen() {
-  const router = useRouter();
-  const { user } = useAuthStore();
-  const { data: reminders, isLoading, refetch } = useTodayReminders();
-  const { data: activeCount } = useReminderCount();
-  const { data: completedToday } = useCompletedTodayCount();
-  const completeMutation = useCompleteReminder();
-  const uncompleteMutation = useUncompleteReminder();
-  const syncOnRefresh = useSyncOnRefresh();
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [snackbar, setSnackbar] = useState<{ message: string; undoId: string } | null>(null);
-  const lastCompletedId = useRef<string | null>(null);
-
-  const handleRefresh = useCallback(async () => {
-    setIsRefreshing(true);
-    await syncOnRefresh();
-    await refetch();
-    setIsRefreshing(false);
-  }, [syncOnRefresh, refetch]);
-
-  const handleComplete = useCallback((id: string) => {
-    lastCompletedId.current = id;
-    const reminder = reminders?.find((r) => r.id === id);
-    completeMutation.mutate(id);
-    setSnackbar({
-      message: `"${reminder?.title ?? 'Reminder'}" completed`,
-      undoId: id,
-    });
-  }, [reminders, completeMutation]);
-
-  const handleUndo = useCallback(() => {
-    if (snackbar?.undoId) {
-      uncompleteMutation.mutate(snackbar.undoId);
-    }
-    setSnackbar(null);
-  }, [snackbar, uncompleteMutation]);
-
-  const todayTotal = reminders?.length ?? 0;
-  const todayCompleted = reminders?.filter((r) => r.isCompleted).length ?? 0;
-  const progress = todayTotal > 0 ? (todayCompleted / todayTotal) * 100 : 0;
+function QuickAction({
+  icon,
+  label,
+  color,
+  onPress,
+}: {
+  icon: keyof typeof MaterialIcons.glyphMap;
+  label: string;
+  color: string;
+  onPress?: () => void;
+}) {
+  const surface = useThemeColor({}, 'surface');
+  const text = useThemeColor({}, 'text');
+  const border = useThemeColor({}, 'border');
 
   return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-      <FlatList
-        data={reminders}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
-        }
-        ListHeaderComponent={
-          <View className="mb-4 mt-4">
-            <Text className="text-2xl font-bold text-slate-800 dark:text-slate-100">
-              {getGreeting()}
-            </Text>
-            <Text className="mt-1 text-base text-slate-500 dark:text-slate-400">
-              {user?.displayName ?? 'there'}
-            </Text>
-
-            {user?.isGuest && (
-              <Pressable
-                onPress={() => router.push('/(auth)/register')}
-                className="mt-3 rounded-lg bg-sky-50 p-3 dark:bg-sky-900/30"
-              >
-                <Text className="text-sm font-medium text-sky-600 dark:text-sky-400">
-                  Sign up to enable cloud sync →
-                </Text>
-              </Pressable>
-            )}
-
-            {/* Stats cards */}
-            <View className="mt-4 flex-row gap-3">
-              <Card className="flex-1">
-                <Text className="text-2xl font-bold text-slate-800 dark:text-slate-100">
-                  {activeCount ?? 0}
-                </Text>
-                <Text className="text-xs text-slate-500 dark:text-slate-400">Active</Text>
-              </Card>
-              <Card className="flex-1">
-                <Text className="text-2xl font-bold text-green-600">
-                  {completedToday ?? 0}
-                </Text>
-                <Text className="text-xs text-slate-500 dark:text-slate-400">Completed</Text>
-              </Card>
-              <Card className="flex-1">
-                <Text className="text-2xl font-bold text-amber-600">
-                  {todayTotal - todayCompleted}
-                </Text>
-                <Text className="text-xs text-slate-500 dark:text-slate-400">Pending</Text>
-              </Card>
-            </View>
-
-            {/* Progress bar */}
-            {todayTotal > 0 && (
-              <View className="mt-4">
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-medium text-slate-600 dark:text-slate-400">
-                    Today's progress
-                  </Text>
-                  <Text className="text-sm font-medium text-slate-600 dark:text-slate-400">
-                    {Math.round(progress)}%
-                  </Text>
-                </View>
-                <View className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-                  <View
-                    style={{ width: `${progress}%` }}
-                    className="h-full rounded-full bg-sky-500"
-                  />
-                </View>
-              </View>
-            )}
-
-            <Text className="mb-2 mt-6 text-lg font-semibold text-slate-800 dark:text-slate-100">
-              Today's Reminders
-            </Text>
-          </View>
-        }
-        renderItem={({ item }) => (
-          <ReminderCard
-            reminder={item}
-            onComplete={handleComplete}
-          />
-        )}
-        ListEmptyComponent={
-          isLoading ? (
-            <View className="items-center py-12">
-              <ActivityIndicator size="large" color="#0ea5e9" />
-            </View>
-          ) : (
-            <View className="items-center py-12">
-              <Text className="text-base text-slate-400 dark:text-slate-500">
-                No reminders for today
-              </Text>
-              <Text className="mt-1 text-sm text-slate-400 dark:text-slate-500">
-                Tap + to create one
-              </Text>
-            </View>
-          )
-        }
-      />
-
-      {/* Banner ad for free users */}
-      {!user?.isPremium && (
-        <View className="items-center border-t border-slate-200 bg-white py-1 dark:border-slate-700 dark:bg-slate-900">
-          <BannerAd unitId={getBannerAdUnitId()} size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER} />
-        </View>
-      )}
-
-      {/* FAB */}
-      <Pressable
-        onPress={() => router.push('/reminder/create')}
-        className="absolute bottom-24 right-6 h-14 w-14 items-center justify-center rounded-full bg-sky-500 shadow-lg"
+    <Pressable
+      onPress={onPress}
+      style={{
+        flex: 1,
+        backgroundColor: surface,
+        borderRadius: 16,
+        padding: 16,
+        alignItems: 'center',
+        gap: 10,
+        borderWidth: 1,
+        borderColor: border,
+      }}
+    >
+      <View
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 22,
+          backgroundColor: color + '18',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
       >
-        <Plus size={28} color="#ffffff" />
-      </Pressable>
+        <MaterialIcons name={icon} size={22} color={color} />
+      </View>
+      <Animated.Text style={{ color: text, fontSize: 13, fontWeight: '600' }}>
+        {label}
+      </Animated.Text>
+    </Pressable>
+  );
+}
 
-      <Snackbar
-        visible={!!snackbar}
-        message={snackbar?.message ?? ''}
-        actionLabel="Undo"
-        onAction={handleUndo}
-        onDismiss={() => setSnackbar(null)}
-      />
-    </SafeAreaView>
+function EmptyStateCard() {
+  const surface = useThemeColor({}, 'surface');
+  const text = useThemeColor({}, 'text');
+  const textSecondary = useThemeColor({}, 'textSecondary');
+  const border = useThemeColor({}, 'border');
+  const primary = useThemeColor({}, 'primary');
+
+  return (
+    <View
+      style={{
+        backgroundColor: surface,
+        borderRadius: 16,
+        padding: 32,
+        alignItems: 'center',
+        gap: 12,
+        borderWidth: 1,
+        borderColor: border,
+      }}
+    >
+      <View
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 32,
+          backgroundColor: primary + '15',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <MaterialIcons name="notifications-none" size={32} color={primary} />
+      </View>
+      <Animated.Text style={{ color: text, fontSize: 17, fontWeight: '700' }}>
+        No reminders yet
+      </Animated.Text>
+      <Animated.Text
+        style={{ color: textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 20 }}
+      >
+        Tap the + button to create your first reminder and stay on top of what matters.
+      </Animated.Text>
+    </View>
+  );
+}
+
+export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const backgroundColor = useThemeColor({}, 'background');
+  const text = useThemeColor({}, 'text');
+  const primary = useThemeColor({}, 'primary');
+  const success = useThemeColor({}, 'success');
+  const warning = useThemeColor({}, 'warning');
+
+  const isGuest = useAuthStore((s) => s.isGuest);
+  const user = useAuthStore((s) => s.user);
+
+  const reminders = useReminderStore((s) => s.reminders);
+  const isLoading = useReminderStore((s) => s.isLoading);
+  const todayCount = useReminderStore((s) => s.todayCount);
+  const upcomingCount = useReminderStore((s) => s.upcomingCount);
+  const completedCount = useReminderStore((s) => s.completedCount);
+  const loadReminders = useReminderStore((s) => s.loadReminders);
+  const toggleComplete = useReminderStore((s) => s.toggleComplete);
+
+  const ownerId = isGuest ? 'guest' : user?.id ?? '';
+  const name = isGuest ? 'Guest' : user?.email ? user.email.split('@')[0] : '';
+
+  useEffect(() => {
+    if (ownerId) {
+      loadReminders(ownerId);
+    }
+  }, [ownerId]);
+
+  const todayReminders = useMemo(() => {
+    const today = new Date();
+    const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+
+    return reminders.filter((r) => {
+      if (r.type === 'location') return true;
+      if (!r.date_time) return false;
+      const dt = new Date(r.date_time);
+      return dt >= startOfDay && dt < endOfDay;
+    });
+  }, [reminders]);
+
+  const handleRefresh = useCallback(async () => {
+    if (!isGuest && user?.id) {
+      await fullSync(user.id);
+    }
+    await loadReminders(ownerId);
+  }, [isGuest, user?.id, ownerId]);
+
+  const handleToggleComplete = useCallback(
+    (id: string) => {
+      toggleComplete(id, isGuest);
+    },
+    [isGuest],
+  );
+
+  return (
+    <View style={{ flex: 1, backgroundColor }}>
+      <PageHeader>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <View style={{ gap: 4, flex: 1 }}>
+            <Animated.Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 14 }}>
+              {isGuest ? 'Guest Mode' : 'Welcome back'}
+            </Animated.Text>
+            <Animated.Text style={{ color: '#FFFFFF', fontSize: 24, fontWeight: '700' }}>
+              Hello, {name}
+            </Animated.Text>
+          </View>
+          <NetworkIndicator />
+        </View>
+
+        {/* Stats row */}
+        <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
+          {[
+            { count: String(todayCount), label: 'Today' },
+            { count: String(upcomingCount), label: 'Upcoming' },
+            { count: String(completedCount), label: 'Completed' },
+          ].map((stat) => (
+            <View
+              key={stat.label}
+              style={{
+                flex: 1,
+                backgroundColor: 'rgba(255,255,255,0.15)',
+                borderRadius: 12,
+                paddingVertical: 10,
+                alignItems: 'center',
+                gap: 2,
+              }}
+            >
+              <Animated.Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '700' }}>
+                {stat.count}
+              </Animated.Text>
+              <Animated.Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>
+                {stat.label}
+              </Animated.Text>
+            </View>
+          ))}
+        </View>
+
+        {/* Guest warning inside header */}
+        {isGuest && (
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              backgroundColor: 'rgba(255,255,255,0.12)',
+              borderRadius: 10,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              marginTop: 4,
+            }}
+          >
+            <MaterialIcons name="cloud-off" size={16} color="rgba(255,255,255,0.7)" />
+            <Animated.Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, flex: 1 }}>
+              Data stored locally only. Sign up to sync across devices.
+            </Animated.Text>
+          </View>
+        )}
+      </PageHeader>
+
+      <ScrollView
+        refreshControl={
+          <RefreshControl refreshing={isLoading} onRefresh={handleRefresh} />
+        }
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 24,
+          paddingBottom: insets.bottom + 100,
+          gap: 24,
+        }}
+      >
+        {/* Quick Actions */}
+        <View style={{ gap: 12 }}>
+          <Animated.Text style={{ color: text, fontSize: 16, fontWeight: '600' }}>
+            Quick Actions
+          </Animated.Text>
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <QuickAction
+              icon="add-circle-outline"
+              label="New Reminder"
+              color={primary}
+              onPress={() => router.push('/reminder/create')}
+            />
+            <QuickAction icon="today" label="Today" color={success} />
+            <QuickAction icon="schedule" label="Upcoming" color={warning} />
+          </View>
+        </View>
+
+        {/* Today's Reminders */}
+        <View style={{ gap: 12 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Animated.Text style={{ color: text, fontSize: 16, fontWeight: '600' }}>
+              Today's Reminders
+            </Animated.Text>
+            <Pressable onPress={() => router.push('/(tabs)/reminders')}>
+              <Animated.Text style={{ color: primary, fontSize: 13, fontWeight: '500' }}>
+                See all
+              </Animated.Text>
+            </Pressable>
+          </View>
+          {todayReminders.length === 0 ? (
+            <EmptyStateCard />
+          ) : (
+            <View style={{ gap: 10 }}>
+              {todayReminders.map((reminder) => (
+                <ReminderCard
+                  key={reminder.id}
+                  reminder={reminder}
+                  onToggleComplete={handleToggleComplete}
+                />
+              ))}
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </View>
   );
 }

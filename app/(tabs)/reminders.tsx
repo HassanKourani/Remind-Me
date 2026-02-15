@@ -1,248 +1,285 @@
-import { useState, useCallback } from 'react';
-import { View, Text, FlatList, RefreshControl, TextInput, Pressable, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Pressable, RefreshControl, ScrollView, TextInput, View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRouter } from 'expo-router';
-import { Plus, Search, X, CheckCheck, Trash2 } from 'lucide-react-native';
-import { useReminders, useActiveReminders, useCompleteReminder, useDeleteReminder, useUncompleteReminder, useRestoreReminder } from '@/hooks/useReminders';
-import { useSyncOnRefresh } from '@/hooks/useSync';
-import { useAuthStore } from '@/stores/authStore';
-import { useSearch } from '@/hooks/useSearch';
-import { ReminderCard } from '@/components/reminders/ReminderCard';
-import { Snackbar } from '@/components/ui/Snackbar';
-import { BannerAd, BannerAdSize } from 'react-native-google-mobile-ads';
-import { getBannerAdUnitId } from '@/services/ads/adService';
 
-type FilterTab = 'all' | 'active' | 'completed';
+import { PageHeader } from '@/components/ui/page-header';
+import { NetworkIndicator } from '@/components/ui/network-indicator';
+import { ReminderCard } from '@/components/reminders/reminder-card';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { useAuthStore } from '@/stores/auth-store';
+import { useReminderStore } from '@/stores/reminder-store';
+import { fullSync } from '@/lib/sync-service';
+import { CATEGORIES } from '@/types/reminder';
+import type { Category, ReminderType } from '@/types/reminder';
 
-export default function RemindersScreen() {
-  const router = useRouter();
-  const { user } = useAuthStore();
-  const [filter, setFilter] = useState<FilterTab>('all');
-  const { data: allReminders, isLoading, refetch } = useReminders();
-  const { data: activeReminders } = useActiveReminders();
-  const completeMutation = useCompleteReminder();
-  const deleteMutation = useDeleteReminder();
-  const uncompleteMutation = useUncompleteReminder();
-  const restoreMutation = useRestoreReminder();
-  const syncOnRefresh = useSyncOnRefresh();
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [snackbar, setSnackbar] = useState<{
-    message: string;
-    action?: 'uncomplete' | 'restore';
-    ids: string[];
-  } | null>(null);
+type FilterStatus = 'all' | 'active' | 'completed';
 
-  const selectionMode = selectedIds.size > 0;
-
-  const toggleSelection = useCallback((id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
-
-  const handleComplete = useCallback((id: string) => {
-    const reminder = allReminders?.find((r) => r.id === id);
-    completeMutation.mutate(id);
-    setSnackbar({
-      message: `"${reminder?.title ?? 'Reminder'}" completed`,
-      action: 'uncomplete',
-      ids: [id],
-    });
-  }, [allReminders, completeMutation]);
-
-  const handleBatchComplete = useCallback(() => {
-    const ids = Array.from(selectedIds);
-    ids.forEach((id) => completeMutation.mutate(id));
-    setSnackbar({
-      message: `${ids.length} reminder${ids.length > 1 ? 's' : ''} completed`,
-      action: 'uncomplete',
-      ids,
-    });
-    clearSelection();
-  }, [selectedIds, completeMutation, clearSelection]);
-
-  const handleBatchDelete = useCallback(() => {
-    const ids = Array.from(selectedIds);
-    ids.forEach((id) => deleteMutation.mutate(id));
-    setSnackbar({
-      message: `${ids.length} reminder${ids.length > 1 ? 's' : ''} deleted`,
-      action: 'restore',
-      ids,
-    });
-    clearSelection();
-  }, [selectedIds, deleteMutation, clearSelection]);
-
-  const handleUndo = useCallback(() => {
-    if (!snackbar) return;
-    if (snackbar.action === 'uncomplete') {
-      snackbar.ids.forEach((id) => uncompleteMutation.mutate(id));
-    } else if (snackbar.action === 'restore') {
-      snackbar.ids.forEach((id) => restoreMutation.mutate(id));
-    }
-    setSnackbar(null);
-  }, [snackbar, uncompleteMutation, restoreMutation]);
-
-  const handleRefresh = useCallback(async () => {
-    setIsRefreshing(true);
-    await syncOnRefresh();
-    await refetch();
-    setIsRefreshing(false);
-  }, [syncOnRefresh, refetch]);
-
-  const baseList = filter === 'active'
-    ? activeReminders
-    : filter === 'completed'
-    ? allReminders?.filter((r) => r.isCompleted)
-    : allReminders;
-
-  const { query, setQuery, filteredResults } = useSearch(baseList);
-
-  const tabs: { key: FilterTab; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'active', label: 'Active' },
-    { key: 'completed', label: 'Completed' },
-  ];
+function FilterChip({
+  label,
+  isActive,
+  onPress,
+}: {
+  label: string;
+  isActive: boolean;
+  onPress: () => void;
+}) {
+  const primary = useThemeColor({}, 'primary');
+  const surface = useThemeColor({}, 'surface');
+  const text = useThemeColor({}, 'text');
+  const border = useThemeColor({}, 'border');
 
   return (
-    <SafeAreaView className="flex-1 bg-white dark:bg-slate-900">
-      <View className="px-4 pt-4">
-        {selectionMode ? (
-          <View className="mb-4 flex-row items-center justify-between">
-            <View className="flex-row items-center gap-2">
-              <Pressable onPress={clearSelection} hitSlop={8}>
-                <X size={24} color="#64748b" />
-              </Pressable>
-              <Text className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-                {selectedIds.size} selected
-              </Text>
-            </View>
-            <View className="flex-row gap-3">
-              <Pressable
-                onPress={handleBatchComplete}
-                className="flex-row items-center gap-1 rounded-lg bg-green-500 px-3 py-2"
-              >
-                <CheckCheck size={16} color="#ffffff" />
-                <Text className="text-sm font-medium text-white">Complete</Text>
-              </Pressable>
-              <Pressable
-                onPress={handleBatchDelete}
-                className="flex-row items-center gap-1 rounded-lg bg-red-500 px-3 py-2"
-              >
-                <Trash2 size={16} color="#ffffff" />
-                <Text className="text-sm font-medium text-white">Delete</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : (
-          <Text className="mb-4 text-2xl font-bold text-slate-800 dark:text-slate-100">
-            Reminders
-          </Text>
-        )}
+    <Pressable
+      onPress={onPress}
+      style={{
+        backgroundColor: isActive ? primary + '15' : surface,
+        borderRadius: 20,
+        paddingHorizontal: 14,
+        paddingVertical: 7,
+        borderWidth: 1,
+        borderColor: isActive ? primary : border,
+      }}
+    >
+      <Animated.Text
+        style={{
+          color: isActive ? primary : text,
+          fontSize: 13,
+          fontWeight: isActive ? '600' : '500',
+        }}
+      >
+        {label}
+      </Animated.Text>
+    </Pressable>
+  );
+}
 
-        {/* Search bar */}
-        <View className="mb-4 flex-row items-center rounded-xl border border-slate-200 bg-slate-50 px-3 dark:border-slate-700 dark:bg-slate-800">
-          <Search size={20} color="#94a3b8" />
-          <TextInput
-            className="ml-2 flex-1 py-3 text-base text-slate-800 dark:text-slate-100"
-            placeholder="Search reminders..."
-            placeholderTextColor="#94a3b8"
-            value={query}
-            onChangeText={setQuery}
-          />
-        </View>
+function EmptyState() {
+  const surface = useThemeColor({}, 'surface');
+  const text = useThemeColor({}, 'text');
+  const textSecondary = useThemeColor({}, 'textSecondary');
+  const border = useThemeColor({}, 'border');
+  const primary = useThemeColor({}, 'primary');
 
-        {/* Filter tabs */}
-        <View className="mb-4 flex-row gap-2">
-          {tabs.map((tab) => (
-            <Pressable
-              key={tab.key}
-              onPress={() => setFilter(tab.key)}
-              className={`rounded-full px-4 py-2 ${
-                filter === tab.key
-                  ? 'bg-sky-500'
-                  : 'bg-slate-100 dark:bg-slate-800'
-              }`}
-            >
-              <Text
-                className={`text-sm font-medium ${
-                  filter === tab.key
-                    ? 'text-white'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                {tab.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+  return (
+    <View
+      style={{
+        backgroundColor: surface,
+        borderRadius: 16,
+        padding: 40,
+        alignItems: 'center',
+        gap: 12,
+        borderWidth: 1,
+        borderColor: border,
+      }}
+    >
+      <View
+        style={{
+          width: 64,
+          height: 64,
+          borderRadius: 32,
+          backgroundColor: primary + '15',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <MaterialIcons name="list-alt" size={32} color={primary} />
       </View>
+      <Animated.Text style={{ color: text, fontSize: 17, fontWeight: '700' }}>
+        No reminders found
+      </Animated.Text>
+      <Animated.Text
+        style={{ color: textSecondary, fontSize: 14, textAlign: 'center', lineHeight: 20 }}
+      >
+        Try adjusting your filters or create a new reminder to get started!
+      </Animated.Text>
+    </View>
+  );
+}
 
-      <FlatList
-        data={filteredResults}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 100 }}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
-        }
-        renderItem={({ item }) => (
-          <ReminderCard
-            reminder={item}
-            onComplete={handleComplete}
-            onLongPress={toggleSelection}
-            selected={selectedIds.has(item.id)}
-            selectionMode={selectionMode}
-          />
-        )}
-        ListEmptyComponent={
-          isLoading ? (
-            <View className="items-center py-12">
-              <ActivityIndicator size="large" color="#0ea5e9" />
-            </View>
-          ) : (
-            <View className="items-center py-12">
-              <Text className="text-base text-slate-400 dark:text-slate-500">
-                {query ? 'No reminders match your search' : 'No reminders yet'}
-              </Text>
-              {!query && (
-                <Text className="mt-1 text-sm text-slate-400 dark:text-slate-500">
-                  Tap + to create your first reminder
-                </Text>
-              )}
-            </View>
-          )
-        }
-      />
+export default function RemindersScreen() {
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const backgroundColor = useThemeColor({}, 'background');
+  const surface = useThemeColor({}, 'surface');
+  const text = useThemeColor({}, 'text');
+  const textSecondary = useThemeColor({}, 'textSecondary');
+  const border = useThemeColor({}, 'border');
 
-      {/* Banner ad for free users */}
-      {!user?.isPremium && (
-        <View className="items-center border-t border-slate-200 bg-white py-1 dark:border-slate-700 dark:bg-slate-900">
-          <BannerAd unitId={getBannerAdUnitId()} size={BannerAdSize.ANCHORED_ADAPTIVE_BANNER} />
+  const isGuest = useAuthStore((s) => s.isGuest);
+  const user = useAuthStore((s) => s.user);
+
+  const reminders = useReminderStore((s) => s.reminders);
+  const isLoading = useReminderStore((s) => s.isLoading);
+  const loadReminders = useReminderStore((s) => s.loadReminders);
+  const toggleComplete = useReminderStore((s) => s.toggleComplete);
+
+  const ownerId = isGuest ? 'guest' : user?.id ?? '';
+
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  const [selectedType, setSelectedType] = useState<ReminderType | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+
+  useEffect(() => {
+    if (ownerId) {
+      loadReminders(ownerId);
+    }
+  }, [ownerId]);
+
+  const filteredReminders = useMemo(() => {
+    let result = reminders;
+
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter(
+        (r) =>
+          r.title.toLowerCase().includes(q) ||
+          (r.notes && r.notes.toLowerCase().includes(q)),
+      );
+    }
+
+    if (filterStatus === 'active') {
+      result = result.filter((r) => !r.is_completed);
+    } else if (filterStatus === 'completed') {
+      result = result.filter((r) => r.is_completed);
+    }
+
+    if (selectedType) {
+      result = result.filter((r) => r.type === selectedType);
+    }
+
+    if (selectedCategory) {
+      result = result.filter((r) => r.category === selectedCategory);
+    }
+
+    return result;
+  }, [reminders, search, filterStatus, selectedType, selectedCategory]);
+
+  const handleRefresh = useCallback(async () => {
+    if (!isGuest && user?.id) {
+      await fullSync(user.id);
+    }
+    await loadReminders(ownerId);
+  }, [isGuest, user?.id, ownerId]);
+
+  const handleToggleComplete = useCallback(
+    (id: string) => {
+      toggleComplete(id, isGuest);
+    },
+    [isGuest],
+  );
+
+  return (
+    <View style={{ flex: 1, backgroundColor }}>
+      <PageHeader>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <View style={{ gap: 4, flex: 1 }}>
+            <Animated.Text style={{ color: '#FFFFFF', fontSize: 24, fontWeight: '700' }}>
+              All Reminders
+            </Animated.Text>
+            <Animated.Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 14 }}>
+              {reminders.length} reminder{reminders.length !== 1 ? 's' : ''}
+            </Animated.Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <NetworkIndicator />
+            <Pressable onPress={() => router.push('/reminder/create')}>
+              <MaterialIcons name="add-circle" size={28} color="#FFFFFF" />
+            </Pressable>
+          </View>
         </View>
-      )}
+      </PageHeader>
 
-      {/* FAB */}
-      {!selectionMode && (
-        <Pressable
-          onPress={() => router.push('/reminder/create')}
-          className="absolute bottom-24 right-6 h-14 w-14 items-center justify-center rounded-full bg-sky-500 shadow-lg"
+      <ScrollView
+        refreshControl={
+          <RefreshControl refreshing={isLoading} onRefresh={handleRefresh} />
+        }
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 16,
+          paddingBottom: insets.bottom + 100,
+          gap: 16,
+        }}
+      >
+        {/* Search bar */}
+        <View
+          style={{
+            backgroundColor: surface,
+            borderRadius: 12,
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 14,
+            height: 44,
+            borderWidth: 1,
+            borderColor: border,
+            gap: 10,
+          }}
         >
-          <Plus size={28} color="#ffffff" />
-        </Pressable>
-      )}
+          <MaterialIcons name="search" size={20} color={textSecondary} />
+          <TextInput
+            placeholder="Search reminders..."
+            placeholderTextColor={textSecondary + '80'}
+            value={search}
+            onChangeText={setSearch}
+            style={{ flex: 1, color: text, fontSize: 15 }}
+          />
+          {search.length > 0 && (
+            <Pressable onPress={() => setSearch('')} hitSlop={8}>
+              <MaterialIcons name="close" size={18} color={textSecondary} />
+            </Pressable>
+          )}
+        </View>
 
-      <Snackbar
-        visible={!!snackbar}
-        message={snackbar?.message ?? ''}
-        actionLabel="Undo"
-        onAction={handleUndo}
-        onDismiss={() => setSnackbar(null)}
-      />
-    </SafeAreaView>
+        {/* Filter chips */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          <FilterChip label="All" isActive={filterStatus === 'all'} onPress={() => setFilterStatus('all')} />
+          <FilterChip label="Active" isActive={filterStatus === 'active'} onPress={() => setFilterStatus('active')} />
+          <FilterChip label="Completed" isActive={filterStatus === 'completed'} onPress={() => setFilterStatus('completed')} />
+          <View style={{ width: 1, backgroundColor: border, marginHorizontal: 4 }} />
+          <FilterChip
+            label="Time"
+            isActive={selectedType === 'time'}
+            onPress={() => setSelectedType(selectedType === 'time' ? null : 'time')}
+          />
+          <FilterChip
+            label="Location"
+            isActive={selectedType === 'location'}
+            onPress={() => setSelectedType(selectedType === 'location' ? null : 'location')}
+          />
+        </ScrollView>
+
+        {/* Category chips */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+          {CATEGORIES.map((cat) => (
+            <FilterChip
+              key={cat.value}
+              label={cat.label}
+              isActive={selectedCategory === cat.value}
+              onPress={() =>
+                setSelectedCategory(selectedCategory === cat.value ? null : cat.value)
+              }
+            />
+          ))}
+        </ScrollView>
+
+        {/* Reminder list */}
+        {filteredReminders.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <View style={{ gap: 10 }}>
+            {filteredReminders.map((reminder) => (
+              <ReminderCard
+                key={reminder.id}
+                reminder={reminder}
+                onToggleComplete={handleToggleComplete}
+              />
+            ))}
+          </View>
+        )}
+      </ScrollView>
+    </View>
   );
 }

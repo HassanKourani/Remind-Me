@@ -1,121 +1,205 @@
-import '../global.css';
-
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
+import { Alert } from 'react-native';
+import { DarkTheme, DefaultTheme, Theme, ThemeProvider } from '@react-navigation/native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { QueryClientProvider } from '@tanstack/react-query';
 import * as SplashScreen from 'expo-splash-screen';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import 'react-native-reanimated';
+import '../global.css';
 
-import { queryClient } from '@/lib/queryClient';
-import { initializeDatabase } from '@/services/database/sqlite';
-import { useAuthStore } from '@/stores/authStore';
-import { setupNotifications } from '@/services/notifications/setup';
-import { setupNotificationHandlers, cleanupNotificationHandlers } from '@/services/notifications/handlers';
-import { restoreNotificationsAndGeofences } from '@/services/notifications/bootReceiver';
-import { initializeRevenueCat, loginRevenueCat } from '@/services/purchases/revenueCat';
-import { initializeAds } from '@/services/ads/adService';
-import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { Colors } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { ToastProvider } from '@/components/providers/toast-provider';
+import { supabase } from '@/lib/supabase';
+import { useAuthStore } from '@/stores/auth-store';
+import { getBiometricPreference } from '@/lib/biometrics';
+import { initDatabase } from '@/lib/database';
+import { startNetworkMonitor, stopNetworkMonitor } from '@/lib/network-monitor';
+import { fullSync, mergeGuestData } from '@/lib/sync-service';
+import { useReminderStore } from '@/stores/reminder-store';
+import { setupNotificationChannels, reregisterAllNotifications } from '@/lib/notifications';
+import { reregisterAllGeofences } from '@/lib/geofencing';
+import * as repo from '@/lib/reminder-repository';
 
 SplashScreen.preventAutoHideAsync();
 
-function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuthStore();
-  const segments = useSegments();
+const LightNavTheme: Theme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: Colors.light.primary,
+    background: Colors.light.background,
+    card: Colors.light.surface,
+    text: Colors.light.text,
+    border: Colors.light.border,
+    notification: Colors.light.accent,
+  },
+};
+
+const DarkNavTheme: Theme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    primary: Colors.dark.primary,
+    background: Colors.dark.background,
+    card: Colors.dark.surface,
+    text: Colors.dark.text,
+    border: Colors.dark.border,
+    notification: Colors.dark.accent,
+  },
+};
+
+export const unstable_settings = {
+  anchor: '(tabs)',
+};
+
+function useProtectedRoute() {
   const router = useRouter();
+  const segments = useSegments();
+  const session = useAuthStore((s) => s.session);
+  const isGuest = useAuthStore((s) => s.isGuest);
+  const isInitialized = useAuthStore((s) => s.isInitialized);
 
   useEffect(() => {
-    if (isLoading) return;
+    if (!isInitialized) return;
 
     const inAuthGroup = segments[0] === '(auth)';
+    const isAuthenticated = !!session || isGuest;
 
     if (!isAuthenticated && !inAuthGroup) {
       router.replace('/(auth)/welcome');
     } else if (isAuthenticated && inAuthGroup) {
       router.replace('/(tabs)');
     }
-  }, [isAuthenticated, isLoading, segments]);
-
-  return <>{children}</>;
+  }, [session, isGuest, isInitialized, segments]);
 }
 
 export default function RootLayout() {
-  const [isReady, setIsReady] = useState(false);
-  const initialize = useAuthStore((s) => s.initialize);
+  const colorScheme = useColorScheme();
+  const setSession = useAuthStore((s) => s.setSession);
+  const setInitialized = useAuthStore((s) => s.setInitialized);
+  const setBiometricEnabled = useAuthStore((s) => s.setBiometricEnabled);
+  const mergeHandledRef = useRef(false);
+
+  useProtectedRoute();
 
   useEffect(() => {
-    async function init() {
-      try {
-        await initializeDatabase();
-        console.log('[Init] Database initialized');
-        await initialize();
-        console.log('[Init] Auth initialized');
-        await setupNotifications();
-        setupNotificationHandlers();
-        console.log('[Init] Notifications initialized');
+    (async () => {
+      // Initialize database
+      await initDatabase();
 
-        // Initialize RevenueCat
-        await initializeRevenueCat();
-        console.log('[Init] RevenueCat initialized');
+      // Setup notification channels
+      await setupNotificationChannels();
 
-        // Restore notifications after boot and sync premium (if user exists)
-        const currentUser = useAuthStore.getState().user;
-        if (currentUser && !currentUser.isGuest) {
-          await loginRevenueCat(currentUser.id);
-          await useAuthStore.getState().syncPremiumWithRevenueCat();
-          restoreNotificationsAndGeofences(currentUser.id);
-        }
+      // Check biometric preference
+      const bioPref = await getBiometricPreference();
+      setBiometricEnabled(bioPref);
 
-        // Initialize ads (for non-premium users)
-        if (!currentUser?.isPremium) {
-          await initializeAds();
-          console.log('[Init] Ads initialized');
-        }
-      } catch (error) {
-        console.error('[Init] Failed to initialize:', error);
-      } finally {
-        setIsReady(true);
-        await SplashScreen.hideAsync();
+      // Get initial session
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      setSession(session);
+
+      // Load reminders and re-register notifications/geofences
+      if (session?.user) {
+        await fullSync(session.user.id);
+        await useReminderStore.getState().loadReminders(session.user.id);
+        const reminders = useReminderStore.getState().reminders;
+        await reregisterAllNotifications(reminders);
+        await reregisterAllGeofences(reminders);
       }
-    }
-    init();
-  }, []);
 
-  if (!isReady) return null;
+      setInitialized(true);
+      await SplashScreen.hideAsync();
+    })();
+
+    // Listen for auth state changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setSession(session);
+
+      // Handle guest-to-signed-in merge
+      if (event === 'SIGNED_IN' && session?.user && !mergeHandledRef.current) {
+        mergeHandledRef.current = true;
+
+        // Check for guest data
+        const guestReminders = await repo.getAllReminders('guest');
+        if (guestReminders.length > 0) {
+          Alert.alert(
+            'Merge Guest Data?',
+            `You have ${guestReminders.length} reminder${guestReminders.length > 1 ? 's' : ''} saved locally. Would you like to merge them with your account?`,
+            [
+              {
+                text: 'Discard',
+                style: 'destructive',
+                onPress: async () => {
+                  await repo.clearOwnerData('guest');
+                  useReminderStore.getState().clearAll();
+                  await fullSync(session.user.id);
+                  await useReminderStore.getState().loadReminders(session.user.id);
+                },
+              },
+              {
+                text: 'Merge',
+                onPress: async () => {
+                  await mergeGuestData(session.user.id);
+                  await fullSync(session.user.id);
+                  await useReminderStore.getState().loadReminders(session.user.id);
+                },
+              },
+            ],
+          );
+        } else {
+          await fullSync(session.user.id);
+          await useReminderStore.getState().loadReminders(session.user.id);
+        }
+      }
+
+      if (event === 'SIGNED_OUT') {
+        mergeHandledRef.current = false;
+      }
+    });
+
+    // Start network monitor with reconnect handler
+    startNetworkMonitor(async () => {
+      const authState = useAuthStore.getState();
+      if (!authState.isGuest && authState.user?.id) {
+        await fullSync(authState.user.id);
+        await useReminderStore.getState().refreshFromDb(authState.user.id);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      stopNetworkMonitor();
+    };
+  }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <ErrorBoundary>
-        <QueryClientProvider client={queryClient}>
-          <AuthGuard>
-            <Stack>
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-              <Stack.Screen
-                name="reminder/create"
-                options={{ presentation: 'modal', headerShown: false }}
-              />
-              <Stack.Screen
-                name="reminder/[id]"
-                options={{ headerShown: false }}
-              />
-              <Stack.Screen
-                name="premium/index"
-                options={{ presentation: 'modal', headerShown: false }}
-              />
-              <Stack.Screen
-                name="legal/terms"
-                options={{ headerShown: false }}
-              />
-              <Stack.Screen
-                name="legal/privacy"
-                options={{ headerShown: false }}
-              />
-            </Stack>
-          </AuthGuard>
-          <StatusBar style="auto" />
-        </QueryClientProvider>
-      </ErrorBoundary>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkNavTheme : LightNavTheme}>
+        <Stack>
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="(auth)"
+            options={{ headerShown: false, animation: 'fade' }}
+          />
+          <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+          <Stack.Screen
+            name="reminder/create"
+            options={{ headerShown: false, presentation: 'modal' }}
+          />
+          <Stack.Screen
+            name="reminder/[id]"
+            options={{ headerShown: false }}
+          />
+        </Stack>
+        <ToastProvider />
+        <StatusBar style="auto" />
+      </ThemeProvider>
     </GestureHandlerRootView>
   );
 }

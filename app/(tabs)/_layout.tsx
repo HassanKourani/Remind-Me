@@ -1,39 +1,47 @@
 import { Tabs } from 'expo-router';
-import { CalendarCheck, Bell, Settings } from 'lucide-react-native';
+import React from 'react';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+
+import { HapticTab } from '@/components/haptic-tab';
+import { Colors } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function TabLayout() {
+  const colorScheme = useColorScheme();
+
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#0ea5e9',
+        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: false,
-      }}
-    >
+        tabBarButton: HapticTab,
+      }}>
       <Tabs.Screen
         name="index"
         options={{
           title: 'Today',
-          tabBarIcon: ({ color, size }) => (
-            <CalendarCheck size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <MaterialIcons name="today" size={26} color={color} />,
         }}
       />
       <Tabs.Screen
         name="reminders"
         options={{
-          title: 'Reminders',
-          tabBarIcon: ({ color, size }) => (
-            <Bell size={size} color={color} />
-          ),
+          title: 'All Reminders',
+          tabBarIcon: ({ color }) => <MaterialIcons name="list-alt" size={26} color={color} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color, size }) => (
-            <Settings size={size} color={color} />
-          ),
+          tabBarIcon: ({ color }) => <MaterialIcons name="settings" size={26} color={color} />,
+        }}
+      />
+      {/* Hide the explore tab — no longer used */}
+      <Tabs.Screen
+        name="explore"
+        options={{
+          href: null,
         }}
       />
     </Tabs>
